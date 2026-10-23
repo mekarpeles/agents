@@ -186,6 +186,22 @@ def cmd_ls(args):
     return 0
 
 
+def _sender(explicit):
+    """Resolve the 'from' attribution: --from, else $CLAUDIO_AGENT_NAME (set when
+    the caller is itself an agent), else the OS login name. Never the bare
+    'agents' — that reads like a peer agent and confuses the receiver.
+    """
+    import getpass
+    if explicit:
+        return explicit
+    if os.environ.get("CLAUDIO_AGENT_NAME"):
+        return os.environ["CLAUDIO_AGENT_NAME"]
+    try:
+        return getpass.getuser()
+    except Exception:
+        return "cli"
+
+
 def cmd_send(args):
     _require_claudio()
     reg = db.get(args.name)
@@ -193,7 +209,7 @@ def cmd_send(args):
     if not sid:
         print(f"agents: '{args.name}' has no bound session", file=sys.stderr)
         return 1
-    sender = os.environ.get("CLAUDIO_AGENT_NAME", "agents")
+    sender = _sender(args.sender)
     try:
         native.send(sid, " ".join(args.message), sender=sender)
     except (native.SessionNotFound, native.DeliveryError) as e:
@@ -291,6 +307,9 @@ def build_parser():
     s = sub.add_parser("send", help="deliver a message to an agent")
     s.add_argument("name")
     s.add_argument("message", nargs="+")
+    s.add_argument("--from", dest="sender",
+                   help="sender name shown to the receiver "
+                        "(default: $CLAUDIO_AGENT_NAME or your OS login)")
     s.set_defaults(func=cmd_send)
 
     s = sub.add_parser("rm", help="de-register an agent (keeps home dir)")

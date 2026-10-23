@@ -100,7 +100,8 @@ def test_send_resolves_via_db_session(env):
         env["db"].register("lenny", cwd="/tmp/x")
         env["db"].set_session("lenny", "sid-send")
         rc = env["cli"].cmd_send(type("A", (), {"name": "lenny",
-                                                 "message": ["hi lenny"]}))
+                                                 "message": ["hi lenny"],
+                                                 "sender": None})())
         assert rc == 0
         assert wait_for(lambda: len(srv.lines) >= 2)
         assert "hi lenny" in srv.lines[1]["message"]["content"]
@@ -167,6 +168,32 @@ def test_no_command_is_not_required():
     from agents_lib import cli
     args = cli.build_parser().parse_args([])
     assert getattr(args, "cmd", None) is None  # main() prints help, exits 0
+
+
+def test_sender_resolution(env, monkeypatch):
+    import getpass
+    monkeypatch.delenv("CLAUDIO_AGENT_NAME", raising=False)
+    assert env["cli"]._sender("mek") == "mek"             # explicit --from wins
+    monkeypatch.setenv("CLAUDIO_AGENT_NAME", "ada")
+    assert env["cli"]._sender(None) == "ada"              # then env
+    monkeypatch.delenv("CLAUDIO_AGENT_NAME", raising=False)
+    assert env["cli"]._sender(None) == getpass.getuser()  # never the bare "agents"
+
+
+def test_send_from_flag_sets_attribution(env):
+    sock = os.path.join(env["socks"], f"{os.getpid()}.sock")
+    srv = FakeSession(sock)
+    try:
+        write_session(env["sessions"], os.getpid(), sock, "sid-from", "me",
+                      peer_token="feed" * 8)
+        env["db"].register("lenny", cwd="/tmp/x")
+        env["db"].set_session("lenny", "sid-from")
+        env["cli"].cmd_send(type("A", (), {
+            "name": "lenny", "message": ["hi"], "sender": "mek"})())
+        assert wait_for(lambda: len(srv.lines) >= 2)
+        assert srv.lines[1]["from"] == "mek"
+    finally:
+        srv.close()
 
 
 def test_rm_keeps_home(env):
