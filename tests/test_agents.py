@@ -108,6 +108,17 @@ def test_send_resolves_via_db_session(env):
         srv.close()
 
 
+def test_register_with_session_id(env):
+    # --session-id binds in the DB and writes last-session-id for `up` to resume.
+    rc = env["cli"].cmd_register(type("A", (), {
+        "name": "ada", "role": "lead", "workspace": "ol-leads",
+        "cwd": "/Users/mek/Projects/ada", "identity": None, "prompt": None,
+        "session_id": "5662a36c-05c3-44cd-9916-a1e9aaa50b3b"})())
+    assert rc == 0
+    assert env["db"].get("ada")["session_id"] == "5662a36c-05c3-44cd-9916-a1e9aaa50b3b"
+    assert env["home"].read_session_id("ada") == "5662a36c-05c3-44cd-9916-a1e9aaa50b3b"
+
+
 def test_list_aliases_ls():
     from agents_lib import cli
     args = cli.build_parser().parse_args(["list"])

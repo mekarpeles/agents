@@ -46,23 +46,29 @@ def init():
 
 
 def register(name, role=None, workspace=None, cwd=None, initial_prompt=None,
-             identity_path=None):
-    """Register or update an agent (upsert on name). Does not launch anything."""
+             identity_path=None, session_id=None):
+    """Register or update an agent (upsert on name). Does not launch anything.
+
+    session_id, when given, binds the agent to an existing Claude session (adopt
+    a session agents did not start) — the registry equivalent of `--resume`.
+    """
     init()
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     with _conn() as c:
         c.execute("""
             INSERT INTO agents
                 (name, role, workspace, cwd, initial_prompt, identity_path,
-                 registered_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                 session_id, registered_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 role=coalesce(excluded.role, agents.role),
                 workspace=coalesce(excluded.workspace, agents.workspace),
                 cwd=coalesce(excluded.cwd, agents.cwd),
                 initial_prompt=coalesce(excluded.initial_prompt, agents.initial_prompt),
-                identity_path=coalesce(excluded.identity_path, agents.identity_path)
-        """, (name, role, workspace, cwd, initial_prompt, identity_path, ts))
+                identity_path=coalesce(excluded.identity_path, agents.identity_path),
+                session_id=coalesce(excluded.session_id, agents.session_id)
+        """, (name, role, workspace, cwd, initial_prompt, identity_path,
+              session_id, ts))
 
 
 def set_session(name, session_id):

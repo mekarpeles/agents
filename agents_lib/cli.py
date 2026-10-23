@@ -6,7 +6,7 @@ host is pluggable (foreground / herdr), so there is no tmux dependency and no
 per-agent message-injection daemon.
 
     agents register <name> [--role R] [--workspace W] [--cwd D]
-                           [--identity path] [--prompt text]
+                           [--identity path] [--prompt text] [--session-id ID]
     agents up <name> [--host foreground|herdr] [--prompt text] [--no-inject]
 
 Agents launch under Claude Code auto-mode, so there is no permission-prompt
@@ -89,10 +89,11 @@ def _bind_and_inject(name, pid, is_first_start, inject):
 def cmd_register(args):
     db.register(args.name, role=args.role, workspace=args.workspace,
                 cwd=args.cwd, initial_prompt=args.prompt,
-                identity_path=args.identity)
+                identity_path=args.identity, session_id=args.session_id)
     home.ensure_home(args.name, cwd=args.cwd, identity_path=args.identity,
-                     initial_prompt=args.prompt)
-    print(f"agents: registered '{args.name}'")
+                     initial_prompt=args.prompt, session_id=args.session_id)
+    bound = f" (bound to session {args.session_id})" if args.session_id else ""
+    print(f"agents: registered '{args.name}'{bound}")
     return 0
 
 
@@ -251,6 +252,8 @@ def build_parser():
     s.add_argument("--cwd")
     s.add_argument("--identity")
     s.add_argument("--prompt")
+    s.add_argument("--session-id", dest="session_id",
+                   help="adopt an existing Claude sessionId (resume it on `up`)")
     s.set_defaults(func=cmd_register)
 
     s = sub.add_parser("up", help="launch (or resume) an agent")

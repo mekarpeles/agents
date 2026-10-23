@@ -23,10 +23,18 @@ def home_dir(name):
     return os.path.join(db.STATE_DIR, name)
 
 
-def ensure_home(name, cwd=None, identity_path=None, initial_prompt=None):
-    """Create/seed an agent's home dir. Returns its path. Idempotent."""
+def ensure_home(name, cwd=None, identity_path=None, initial_prompt=None,
+                session_id=None):
+    """Create/seed an agent's home dir. Returns its path. Idempotent.
+
+    session_id, when given, is written to last-session-id so `agents up` resumes
+    that session (adopting one agents did not start).
+    """
     home = home_dir(name)
     os.makedirs(home, exist_ok=True)
+
+    if session_id:
+        write_session_id(name, session_id)
 
     # identity.md — seed once, never overwrite (the agent owns it after start).
     if identity_path:

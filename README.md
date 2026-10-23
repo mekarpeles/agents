@@ -8,6 +8,7 @@ delivery, because Claude Code delivers natively now.
 
 ```
 agents register pam --role "registry owner" --workspace pam --identity ./pam.md
+agents register ada --cwd ~/Projects/ada --session-id <id>   # adopt an existing session
 agents up pam                 # launch attached to this terminal (resumes if bound)
 agents up pam --host herdr    # launch detached in a herdr pane
 agents send pam "status?"     # native delivery via claudio
