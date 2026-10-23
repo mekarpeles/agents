@@ -195,6 +195,45 @@ def cmd_rm(args):
     return 0
 
 
+def cmd_migrate(args):
+    from agents_lib import migrate
+    results = migrate.migrate(apply=args.apply, link=args.link,
+                              names=args.names or None)
+    if not results:
+        print("agents: nothing to migrate (no cmux agents.db or no rows at "
+              f"{migrate.cmux_db_path()})")
+        return 0
+    mode = "APPLY" if args.apply else "DRY-RUN (use --apply to execute)"
+    # Detect session_ids bound to more than one agent — the cmux misattribution
+    # bug frozen into the data. Migration mirrors cmux faithfully, so these carry
+    # over; flag them so they can be repaired (one is the real owner).
+    counts = {}
+    for it in results:
+        if it["session_id"]:
+            counts[it["session_id"]] = counts.get(it["session_id"], 0) + 1
+    shared = {sid for sid, n in counts.items() if n > 1}
+    print(f"agents migrate — {mode}  [{len(results)} agent(s)]")
+    for it in results:
+        flags = []
+        if not it["has_home"]:
+            flags.append("no home dir")
+        if not it["session_id"]:
+            flags.append("no session_id")
+        if it["session_id"] in shared:
+            flags.append(f"SHARED session_id x{counts[it['session_id']]}")
+        if it.get("workflow_path"):
+            flags.append("workflow_path dropped")
+        extra = f"  ({', '.join(flags)})" if flags else ""
+        print(f"  {it['name']:<22} {it['action']}{extra}")
+    if shared:
+        print(f"\nWARNING: {len(shared)} session_id(s) are bound to multiple "
+              f"agents (cmux misattribution). Resolve before/after --apply so each "
+              f"agent keeps its real session.")
+    if not args.apply:
+        print("\nNon-destructive: ~/.cmux is never modified. Re-run with --apply.")
+    return 0
+
+
 def cmd_help(args):
     build_parser().print_help()
     return 0
@@ -238,6 +277,13 @@ def build_parser():
     s = sub.add_parser("rm", help="de-register an agent (keeps home dir)")
     s.add_argument("name")
     s.set_defaults(func=cmd_rm)
+
+    s = sub.add_parser("migrate", help="migrate cmux state (~/.cmux) into agents")
+    s.add_argument("names", nargs="*", help="limit to these agent names")
+    s.add_argument("--apply", action="store_true", help="execute (default: dry-run)")
+    s.add_argument("--link", action="store_true",
+                   help="symlink homes instead of copying")
+    s.set_defaults(func=cmd_migrate)
 
     # `help` as a real subcommand too, so `agents help` works like `agents --help`.
     s = sub.add_parser("help", help="show this help")
