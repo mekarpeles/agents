@@ -13,6 +13,24 @@ import time
 SESSIONS_DIR = os.path.expanduser(
     os.environ.get("CLAUDE_SESSIONS_DIR", "~/.claude/sessions")
 )
+PROJECTS_DIR = os.path.expanduser(
+    os.environ.get("CLAUDE_PROJECTS_DIR", "~/.claude/projects")
+)
+
+
+def transcript_exists(session_id, cwd=None):
+    """True if a resumable transcript (<sessionId>.jsonl) exists for this id.
+
+    Claude writes it lazily (after the first exchange), so a brand-new or empty
+    session has none and cannot be --resume'd. Checks the cwd's project dir first,
+    then any project dir.
+    """
+    import glob
+    if cwd:
+        proj = os.path.join(PROJECTS_DIR, cwd.replace("/", "-"))
+        if os.path.exists(os.path.join(proj, f"{session_id}.jsonl")):
+            return True
+    return bool(glob.glob(os.path.join(PROJECTS_DIR, "*", f"{session_id}.jsonl")))
 
 
 def record_for_pid(pid):

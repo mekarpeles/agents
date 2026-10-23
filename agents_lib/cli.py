@@ -110,6 +110,22 @@ def cmd_up(args):
                      initial_prompt=args.prompt or reg.get("initial_prompt"))
 
     resume_id = home.read_session_id(args.name)
+    if resume_id:
+        # Already running? Don't start a duplicate on the same session.
+        try:
+            rec = native.resolve(resume_id)
+            print(f"agents: '{args.name}' is already running "
+                  f"(session {resume_id[:8]}, pid {rec.get('pid')}). "
+                  f"Use `agents send {args.name} ...` or `agents down {args.name}` first.",
+                  file=sys.stderr)
+            return 1
+        except native.SessionNotFound:
+            pass  # not running — ok to resume if there's a transcript
+        # No resumable transcript (e.g. the bound session never had an exchange)?
+        if not session.transcript_exists(resume_id, cwd):
+            print(f"agents: no resumable transcript for '{args.name}' "
+                  f"({resume_id[:8]}); starting a fresh session.", file=sys.stderr)
+            resume_id = None
     is_first_start = resume_id is None
     cmd = _claude_cmd(args.name, resume_id)
 

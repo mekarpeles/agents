@@ -119,6 +119,28 @@ def test_register_with_session_id(env):
     assert env["home"].read_session_id("ada") == "5662a36c-05c3-44cd-9916-a1e9aaa50b3b"
 
 
+def test_transcript_exists(env, tmp_path, monkeypatch):
+    proj = tmp_path / "projects"
+    monkeypatch.setattr(env["session"], "PROJECTS_DIR", str(proj))
+    d = proj / "-Users-mek-Projects-ada"
+    d.mkdir(parents=True)
+    (d / "sid-real.jsonl").write_text("{}")
+    assert env["session"].transcript_exists("sid-real", "/Users/mek/Projects/ada")
+    assert not env["session"].transcript_exists("sid-missing", "/Users/mek/Projects/ada")
+
+
+def test_up_detects_already_running(env):
+    # Bind ada to a LIVE session (our own pid) -> up must refuse, not launch.
+    write_session(env["sessions"], os.getpid(), "/tmp/x.sock", "live-sid", "ada")
+    env["db"].register("ada", cwd="/tmp")
+    env["db"].set_session("ada", "live-sid")
+    env["home"].ensure_home("ada", cwd="/tmp", session_id="live-sid")
+    rc = env["cli"].cmd_up(type("A", (), {
+        "name": "ada", "host": "foreground", "prompt": None,
+        "cwd": None, "identity": None, "no_inject": False})())
+    assert rc == 1  # refused because already running (no launch attempted)
+
+
 def test_list_aliases_ls():
     from agents_lib import cli
     args = cli.build_parser().parse_args(["list"])
