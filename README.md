@@ -4,14 +4,20 @@
 
 <h1 align="center">agents</h1>
 
-<p align="center">
-  Register and run named Claude Code agents — <b>without tmux and without a per-agent daemon.</b>
-</p>
+`agents` is a system-level command line tool, designed for both agents and
+humans, for managing AI agents.
 
-A minimal fork of [cmux](https://github.com/mekarpeles/cmux): it keeps what only
-this layer can do (a persistent registry, a per-agent home directory,
-up/down/resume) and drops everything cmux only needed for message delivery,
-because Claude Code delivers natively now.
+1. **Message any running agent** — a native socket API pipes a message directly
+   into an agent's running session, ideal for nudging idle agents or wiring them
+   into workflows.
+2. **Find and resume past sessions** — search previous sessions and `--resume`
+   the one you want.
+3. **Human-readable nicknames** — assign a friendly name to any agent.
+4. **Groups** *(coming soon)* — gather related agents into a group and spin them
+   up together with tmux or herdr.
+5. **Persistent per-agent setup** — a durable home directory, skills, auth, and
+   per-agent tooling for each agent.
+6. **Archive or remove** agents when they are no longer needed.
 
 The command is `agents` (with `ag` as a shorthand alias):
 
