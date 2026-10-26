@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="Ag.jpeg" alt="ag" width="220">
+  <img src="Ag.jpeg" alt="agents" width="220">
 </p>
 
-<h1 align="center">ag</h1>
+<h1 align="center">agents</h1>
 
 <p align="center">
   Register and run named Claude Code agents — <b>without tmux and without a per-agent daemon.</b>
@@ -13,17 +13,19 @@ this layer can do (a persistent registry, a per-agent home directory,
 up/down/resume) and drops everything cmux only needed for message delivery,
 because Claude Code delivers natively now.
 
+The command is `agents` (with `ag` as a shorthand alias):
+
 ```bash
-ag register pam --role "registry owner" --workspace pam --identity ./pam.md
-ag register ada --cwd ~/Projects/ada --session-id <id>   # adopt an existing session
-ag up pam                 # launch attached to this terminal (resumes if bound)
-ag up pam --host herdr    # launch detached in a herdr pane
-ag send pam "status?"     # native delivery via claudio
-ag ls                     # registered agents + live status
-ag list                   # alias of ls
-ag down pam               # SIGTERM the running session
-ag rm pam                 # de-register (home dir preserved)
-ag help                   # same as `ag --help`; bare `ag` also prints help
+agents register pam --role "registry owner" --workspace pam --identity ./pam.md
+agents register ada --cwd ~/Projects/ada --session-id <id>   # adopt an existing session
+agents up pam                 # launch attached to this terminal (resumes if bound)
+agents up pam --host herdr    # launch detached in a herdr pane
+agents send pam "status?"     # native delivery via claudio
+agents ls                     # registered agents + live status
+agents list                   # alias of ls
+agents down pam               # SIGTERM the running session
+agents rm pam                 # de-register (home dir preserved)
+agents help                   # same as `agents --help`; bare `agents` also prints help
 ```
 
 `list`/`ls` and `help`/`--help` are aliases, and an unknown command is rejected
@@ -32,7 +34,7 @@ ag help                   # same as `ag --help`; bare `ag` also prints help
 
 ## How it differs from cmux
 
-| | cmux | ag |
+| | cmux | agents |
 |---|---|---|
 | Message delivery | claudio daemon + tmux send-keys + Enter-retry | **native** (`claudio.native` → session socket) |
 | Idle detection | read tmux cursor position | Claude Code (`notify_idle`) |
@@ -48,10 +50,10 @@ Home dirs keep the cmux layout (`identity.md`, `initial-prompt.md`, `cwd`,
 ## Install
 
 ```bash
-./install.sh                         # pipx: ag (+ claudio) and cq
+./install.sh                         # pipx: agents (+ claudio) and cq
 # or, for development:
 pip install -e /path/to/claudio      # the native messaging dependency
-pip install -e /path/to/agents       # exposes `ag`
+pip install -e /path/to/agents       # exposes `agents` (and the `ag` shortcut)
 ```
 
 State lives under `~/.agents/` (override with `AGENTS_STATE_DIR`).
@@ -61,7 +63,7 @@ State lives under `~/.agents/` (override with `AGENTS_STATE_DIR`).
 The registry is one table today (agents). The vision is a small graph on top of it:
 
 - **Workspaces** — a table grouping one or more agents so you can bring a whole
-  set up together and `ag attach <workspace>` into it (tmux-backed).
+  set up together and `agents attach <workspace>` into it (tmux-backed).
 - **Roles** — a graph of edges over the agents table (`ada reports-to pam`), so
   coordination and escalation have a durable shape, not an ad-hoc convention.
 - **Name resolution** — one resolver across the identifiers that different
