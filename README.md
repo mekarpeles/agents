@@ -19,6 +19,21 @@ humans, for managing AI agents.
    per-agent tooling for each agent.
 6. **Archive or remove** agents when they are no longer needed.
 
+## Install
+
+Requires [Claude Code](https://claude.ai/code) installed and authenticated.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mekarpeles/agents/main/install.sh | bash
+```
+
+Re-run with `--upgrade` to update in place (`… | bash -s -- --upgrade`). Installs
+`agents` (and the `ag` shortcut) plus [cq](https://github.com/mekarpeles/cq) via
+pipx; macOS needs [Homebrew](https://brew.sh). State lives under `~/.agents/`
+(override with `AGENTS_STATE_DIR`).
+
+## Usage
+
 The command is `agents` (with `ag` as a shorthand alias):
 
 ```bash
@@ -54,16 +69,6 @@ dc33a929-b44e-448f-b1d5-adaa9cbd2681  idle       698  Projects     PAM agent res
 `STATE` is `running` (a live process is attached), `idle` (resumable transcript
 on disk, no process), or `gone` (transcript cleaned up — shown only with
 `--all`). `--json` emits one object per line; `-n` caps the count.
-
-## Install
-
-```bash
-./install.sh         # installs `agents` (and its `ag` shortcut)
-# or, from a clone, for development:
-pip install -e .
-```
-
-State lives under `~/.agents/` (override with `AGENTS_STATE_DIR`).
 
 ## Roadmap
 

@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
 set -e
 
-# agents installer — installs agents (+ claudio) and cq via pipx.
-# Mirrors cmux's installer, but needs NO tmux: messaging is native and the
-# terminal host is pluggable (your current terminal, or herdr).
+# agents installer — installs `agents` and `cq` via pipx (no tmux required).
 #
-# Usage: curl -fsSL https://raw.githubusercontent.com/.../install.sh | bash
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/mekarpeles/agents/main/install.sh | bash
+#   ... | bash -s -- --upgrade     # reinstall/update in place
 
 OS="$(uname -s)"
+
+PIPX_INSTALL="pipx install"
+for arg in "$@"; do
+    case "$arg" in
+        --upgrade) PIPX_INSTALL="pipx install --force" ;;
+        *) echo "agents: unknown option '$arg'" >&2; exit 1 ;;
+    esac
+done
 
 # ── pipx ────────────────────────────────────────────────────────────────────
 if ! command -v pipx &>/dev/null; then
@@ -29,22 +37,22 @@ else
     echo "agents: pipx already installed"
 fi
 
-# ── agents (pulls claudio as a dependency; also exposes the `claudio` CLI) ─────
-echo "agents: installing agents (+ claudio)..."
+# ── agents (and its `ag` shortcut) ───────────────────────────────────────────
+echo "agents: installing agents..."
 TMP="$(mktemp -d)"
 git clone --depth=1 "https://github.com/mekarpeles/agents.git" "$TMP/agents"
-pipx install "$TMP/agents"
+$PIPX_INSTALL "$TMP/agents"
 rm -rf "$TMP"
 
-# ── cq (per-agent issue tracker — same sibling tool cmux uses) ────────────────
+# ── cq (per-agent issue tracker) ─────────────────────────────────────────────
 echo "agents: installing cq..."
 CQ_TMP="$(mktemp -d)"
 git clone --depth=1 "https://github.com/mekarpeles/cq.git" "$CQ_TMP/cq"
-pipx install "$CQ_TMP/cq"
+$PIPX_INSTALL "$CQ_TMP/cq"
 rm -rf "$CQ_TMP"
 
 echo ""
-echo "agents installed (no tmux required). Restart your shell or:"
+echo "agents installed. Restart your shell or:"
 echo "  source ~/.zshrc   # macOS"
 echo "  source ~/.bashrc  # Linux"
 echo ""
