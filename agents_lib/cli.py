@@ -23,7 +23,7 @@ import os
 import sys
 import threading
 
-from agents_lib import db, home, hosts, session
+from agents_lib import db, history, home, hosts, session
 
 try:
     from claudio import native, registry as claudio_registry
@@ -186,6 +186,40 @@ def cmd_ls(args):
     return 0
 
 
+def cmd_find(args):
+    rows = history.find_sessions(
+        args.query, include_gone=args.all, limit=args.limit or 20)
+    running = set()
+    if native is not None:
+        running = {r.get("sessionId") for r in native.list_sessions()}
+
+    if args.json:
+        import json as _json
+        for r in rows:
+            print(_json.dumps({**r, "running": r["session_id"] in running}))
+        return 0
+
+    if not rows:
+        print("agents: no matching sessions")
+        return 0
+
+    def clip(s, n):
+        s = " ".join((s or "").split())
+        return s if len(s) <= n else s[: n - 1] + "…"
+
+    print(f"{'SESSION':<36} {'STATE':<8} {'MSGS':>5}  {'CWD':<22} TITLE")
+    for r in rows:
+        state = ("running" if r["session_id"] in running
+                 else "idle" if r["present"] else "gone")
+        cwd = os.path.basename(r["cwd"].rstrip("/")) or r["cwd"]
+        print(f"{r['session_id']:<36} {state:<8} {r['msgs']:>5}  "
+              f"{clip(cwd, 22):<22} {clip(r['title'], 56)}")
+    print("\nresume:  claude --resume <SESSION>   "
+          "(or: agents register <name> --cwd <cwd> --session-id <SESSION>; "
+          "agents up <name>)", file=sys.stderr)
+    return 0
+
+
 def _sender(explicit):
     """Resolve the 'from' attribution: --from, else $CLAUDIO_AGENT_NAME (set when
     the caller is itself an agent), else the OS login name. Never the bare
@@ -303,6 +337,15 @@ def build_parser():
 
     s = sub.add_parser("ls", aliases=["list"], help="list registered agents")
     s.set_defaults(func=cmd_ls)
+
+    s = sub.add_parser("find", aliases=["search"],
+                       help="find past Claude sessions to resume or adopt")
+    s.add_argument("query", nargs="?", help="substring over title, cwd, prompts")
+    s.add_argument("-a", "--all", action="store_true",
+                   help="include sessions whose transcript is gone (not resumable)")
+    s.add_argument("-n", "--limit", type=int, help="max results (default 20)")
+    s.add_argument("--json", action="store_true", help="JSONL output")
+    s.set_defaults(func=cmd_find)
 
     s = sub.add_parser("send", help="deliver a message to an agent")
     s.add_argument("name")
