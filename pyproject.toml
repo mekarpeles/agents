@@ -14,6 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
+ag = "agents_lib.cli:main"
 agents = "agents_lib.cli:main"
 claudio = "claudio.cli:main"
 

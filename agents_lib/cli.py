@@ -273,7 +273,7 @@ def cmd_help(args):
 
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="agents", description=__doc__.splitlines()[0])
+    p = argparse.ArgumentParser(prog="ag", description=__doc__.splitlines()[0])
     # Not required: a bare `agents` prints help instead of an argparse error.
     sub = p.add_subparsers(dest="cmd")
 
