@@ -655,7 +655,7 @@ def build_parser():
     s.add_argument("--down", action="store_true", help="only stopped agents")
     s.set_defaults(func=cmd_ls)
 
-    s = sub.add_parser("find", aliases=["search"],
+    s = sub.add_parser("find",
                        help="find past Claude sessions to resume or adopt")
     s.add_argument("query", nargs="?", help="substring over title, cwd, prompts")
     s.add_argument("-a", "--all", action="store_true",
