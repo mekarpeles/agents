@@ -432,27 +432,44 @@ def cmd_migrate(args):
     return 0
 
 
-def _prompt_yes_no(question, default=True):
-    """Ask a yes/no question on the controlling terminal; return a bool.
+def _read_line(prompt):
+    """Show `prompt` and read one line, or None if there's no way to ask.
 
-    Reads /dev/tty so it still prompts under `curl … | bash` (where stdin is the
-    piped script). With no tty (CI, truly non-interactive), returns the default
-    without blocking.
+    Uses stdin when it's a terminal — the normal, visible path for a direct
+    `agents configure`. Falls back to /dev/tty only when stdin isn't a tty (under
+    `curl … | bash`, stdin is the piped script). None means we couldn't ask.
     """
-    suffix = " [Y/n] " if default else " [y/N] "
     try:
+        if sys.stdin.isatty():
+            return input(prompt)
         tty = open("/dev/tty", "r+")
-    except OSError:
+        try:
+            tty.write(prompt)
+            tty.flush()
+            return tty.readline()
+        finally:
+            tty.close()
+    except (OSError, EOFError):
+        return None
+
+
+def _prompt_yes_no(question, default=True):
+    """Ask a yes/no question; return a bool (the default if we can't ask)."""
+    line = _read_line(question + (" [Y/n] " if default else " [y/N] "))
+    if line is None:
         return default
-    try:
-        tty.write(question + suffix)
-        tty.flush()
-        ans = tty.readline().strip().lower()
-    except OSError:
-        return default
-    finally:
-        tty.close()
+    ans = line.strip().lower()
     return default if not ans else ans.startswith("y")
+
+
+def _prompt_choice(question, choices, default):
+    """Ask the user to pick one of `choices`; return the default if we can't ask
+    or the answer isn't one of them."""
+    line = _read_line(f"{question} [{'/'.join(choices)}] ({default}) ")
+    if line is None:
+        return default
+    ans = line.strip()
+    return ans if ans in choices else default
 
 
 def _install_tmux():
@@ -559,6 +576,9 @@ def cmd_configure(args):
 
     if args.host:
         cfg["host"] = args.host
+    elif not args.no_input:
+        cfg["host"] = _prompt_choice("Default host for launched agents?",
+                                     hosts.CHOICES, cfg["host"])
 
     if cfg["host"] == "tmux" and not shutil.which("tmux"):
         if (not args.no_input) and _prompt_yes_no(
