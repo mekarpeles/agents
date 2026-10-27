@@ -17,7 +17,7 @@ ZSH = r"""#compdef agents
 _agents() {
   local cmd prev
   if (( CURRENT == 2 )); then
-    compadd -- register up down attach detach send list find rm migrate \
+    compadd -- register up down attach detach send list find whoami rm migrate \
                configure completion help
     return
   fi

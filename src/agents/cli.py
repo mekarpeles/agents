@@ -344,6 +344,48 @@ def cmd_send(args):
     return 0
 
 
+def cmd_whoami(args):
+    """Identify the agent this process is running as, from $AGENTS_AGENT_NAME
+    (set by `up`). The way a launched agent answers "who am I?" — resolving its
+    name to its registry row, home, session binding, and task."""
+    name = os.environ.get("AGENTS_AGENT_NAME")
+    if not name:
+        return _err("not running as a managed agent "
+                    "($AGENTS_AGENT_NAME is unset — launch me with `agents up`)")
+    reg = db.get(name) or {}
+    task = home.initial_prompt(name)
+    info = {
+        "name": name,
+        "type": reg.get("type"),
+        "group": reg.get("workspace"),
+        "role": reg.get("role"),
+        "cwd": home.agent_cwd(name),
+        "session_id": reg.get("session_id") or home.read_session_id(name),
+        "home": home.home_dir(name),
+        "registered": bool(reg),
+    }
+    if args.json:
+        import json as _json
+        print(_json.dumps(info))
+        return 0
+    tag = " ".join(p for p in (
+        f"type {info['type']}" if info["type"] else "",
+        f"group {info['group']}" if info["group"] else "") if p)
+    print(f"You are '{name}'" + (f"  ({tag})" if tag else ""))
+    if not info["registered"]:
+        print(f"  (not in the registry) home: {info['home']}")
+        return 0
+    if info["role"]:
+        print(f"  role     {info['role']}")
+    print(f"  cwd      {info['cwd']}")
+    if info["session_id"]:
+        print(f"  session  {info['session_id'][:8]}")
+    print(f"  home     {info['home']}  (AGENTS.md + PROMPT.md)")
+    if task:
+        print(f"  task     {task.strip().splitlines()[0][:72]}")
+    return 0
+
+
 def cmd_rm(args):
     db.remove(args.name)
     print(f"agents: de-registered '{args.name}' (home dir preserved at "
@@ -674,6 +716,11 @@ def build_parser():
                    help="sender name shown to the receiver "
                         "(default: $AGENTS_AGENT_NAME or your OS login)")
     s.set_defaults(func=cmd_send)
+
+    s = sub.add_parser("whoami",
+                       help="identify the agent you're running as ($AGENTS_AGENT_NAME)")
+    s.add_argument("--json", action="store_true", help="machine-readable output")
+    s.set_defaults(func=cmd_whoami)
 
     s = sub.add_parser("rm", help="de-register an agent (keeps home dir)")
     s.add_argument("name")

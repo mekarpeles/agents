@@ -51,6 +51,7 @@ agents up --group web         # bring up every agent in the 'web' group
 agents up ada --host foreground   # or run attached to this terminal
 agents attach pam             # attach to its tmux window (Ctrl-b d to detach)
 agents send pam "status?"     # pipe a message into the running session
+agents whoami                 # who am I? — an agent identifies itself (--json too)
 agents find pam               # search past sessions to resume or adopt
 agents ls                     # registered agents + live status
 agents down pam               # stop it   (agents down --group web  stops the group)
@@ -85,6 +86,10 @@ populate before `up`:
 Types are bundled in the repo under `src/agents/types/`. Claude runs in the home
 dir by default (so `AGENTS.md` loads); pass `--cwd <repo>` to run it in a project
 checkout instead.
+
+A launched agent knows its own name from the `AGENTS_AGENT_NAME` environment
+variable that `up` sets; `agents whoami` resolves that to its registry row, home,
+session binding, and task (so an agent can ask "who am I?").
 
 ## Groups & types
 

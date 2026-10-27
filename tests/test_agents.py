@@ -303,3 +303,31 @@ def test_ls_status_filters(env, capsys):
     p.parse_args(["ls", "--running"]).func(p.parse_args(["ls", "--running"]))
     out = capsys.readouterr().out
     assert "pam" not in out and "no agents match" in out
+
+
+def test_whoami_identifies_from_env(env, monkeypatch, capsys):
+    env["db"].register("ada-1581", agent_type="ada", workspace="br-prs", role="eng")
+    env["home"].ensure_home("ada-1581", cwd="/tmp/x", initial_prompt="do the TTS swap")
+    monkeypatch.setenv("AGENTS_AGENT_NAME", "ada-1581")
+    a = env["cli"].build_parser().parse_args(["whoami"])
+    assert a.func(a) == 0
+    out = capsys.readouterr().out
+    assert "ada-1581" in out and "type ada" in out and "br-prs" in out
+    assert "do the TTS swap" in out
+
+
+def test_whoami_json(env, monkeypatch, capsys):
+    import json
+    env["db"].register("pam", workspace="web")
+    env["home"].ensure_home("pam", cwd="/tmp/x")
+    monkeypatch.setenv("AGENTS_AGENT_NAME", "pam")
+    a = env["cli"].build_parser().parse_args(["whoami", "--json"])
+    assert a.func(a) == 0
+    d = json.loads(capsys.readouterr().out)
+    assert d["name"] == "pam" and d["group"] == "web"
+
+
+def test_whoami_unset_is_error(env, monkeypatch):
+    monkeypatch.delenv("AGENTS_AGENT_NAME", raising=False)
+    a = env["cli"].build_parser().parse_args(["whoami"])
+    assert a.func(a) == 1
