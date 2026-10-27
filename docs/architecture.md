@@ -23,7 +23,10 @@ Each layer owns one job; delivery is independent of where an agent runs.
 |---|---|
 | `cli.py` | argparse + orchestration — the only module that spans all layers |
 | `db.py` | SQLite registry + `select(group, type)`, the one slicer |
+| `config.py` | persistent `~/.agents/config.json`: permission mode + default host |
 | `home.py` | per-agent home dir + agent types |
+| `trust.py` | pre-accept Claude's workspace-trust dialog for an agent's cwd |
+| `completion.py` | zsh/bash tab-completion scripts (`completion`, hidden `_complete`) |
 | `session.py` | bind a launched pid → its Claude `sessionId` |
 | `hosts.py` | pluggable pty hosts: `Host` base + `Tmux`/`Herdr`/`Foreground` |
 | `transport.py` | vendored native socket delivery (self-contained, stdlib-only) |
@@ -86,7 +89,7 @@ the pid resolved from the sessionId, and the window/pane closes when claude exit
 | category | commands | reads/acts on |
 |---|---|---|
 | **Query** | `ls` (registry), `find` (Claude session history) | — |
-| **Provision** | `register`, `migrate` | home, type, tooling |
+| **Provision** | `register`, `migrate`, `configure` | home, type, tooling, config |
 | **Manage** | `rm` | the registry row |
 | **Communicate** | `send` | a running agent's socket |
 | **Operate** | `up`, `down`, `attach`, `detach` | the live process |
@@ -95,9 +98,20 @@ the pid resolved from the sessionId, and the window/pane closes when claude exit
 manage; `find` searches every Claude session on the machine so you can adopt one
 (`register --session-id`). `up`/`down`/`ls` all take the `name | -g | -t` selector.
 
-## Launch mode
+## Launch mode & trust
 
-`up` runs `claude --dangerously-skip-permissions` so a freshly launched agent
-clears the folder-trust and permission prompts and writes its sessionId without a
-human keypress (otherwise `up` can't bind it). `AGENTS_CLAUDE_CMD` overrides the
+A freshly launched agent has to clear two gates *without a human keypress* — the
+workspace-trust dialog and the per-tool permission prompts — or it never writes a
+sessionId and `up` can't bind it. `agents` clears each separately so the default
+need not be the blunt one:
+
+- **Trust** — `trust.py` pre-accepts the dialog by setting `hasTrustDialogAccepted`
+  for the agent's cwd in `~/.claude.json` (exactly what clicking "trust" does), so
+  *any* permission mode launches unattended.
+- **Permission mode** — `config.launch_flags()` turns the configured mode into the
+  claude flag. The default is **`acceptEdits`** (`--permission-mode acceptEdits`):
+  auto-accept file edits, still gate the risky operations. **`bypassPermissions`**
+  (`--dangerously-skip-permissions`, the YOLO opt-in) is explicit, never default.
+
+`agents configure` writes the mode and host; `AGENTS_CLAUDE_CMD` still overrides the
 whole command (tests point it at a fake claude).

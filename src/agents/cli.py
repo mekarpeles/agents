@@ -15,16 +15,21 @@ Commands:
     ls   |   find [query]   |   rm <name>   |   migrate   |   help
 
 Delivery is native (no daemon, no tmux send-keys), and binding is by sessionId, so
-a resume never mis-attributes a session. Agents run under Claude Code auto-mode.
+a resume never mis-attributes a session. Launched agents run in a configurable
+permission mode (default: auto-accept edits) with their workspace pre-trusted, so
+`up` can start them unattended — see `agents configure`.
 """
 
 import argparse
 import os
 import shlex
+import shutil
+import subprocess
 import sys
 import threading
 
-from agents import db, history, home, hosts, session, transport as native
+from agents import (config, db, history, home, hosts, session, trust,
+                    transport as native)
 
 
 def _err(msg):
@@ -34,15 +39,24 @@ def _err(msg):
 
 
 def _claude_cmd(name, resume_id):
-    # Autonomous agents bypass the folder-trust and permission prompts, so a
-    # freshly launched session starts (and writes its sessionId) without a human
-    # keypress — otherwise `up` can't bind it. AGENTS_CLAUDE_CMD overrides the
+    # A freshly launched session must start (and write its sessionId) without a
+    # human keypress, or `up` can't bind it. The configured permission mode
+    # supplies the flag; the workspace is pre-trusted separately (see trust.py) so
+    # a gentle mode still clears the trust dialog. AGENTS_CLAUDE_CMD overrides the
     # whole command (tests point it at a fake claude).
-    default = "claude --dangerously-skip-permissions"
-    cmd = shlex.split(os.environ.get("AGENTS_CLAUDE_CMD", default))
+    override = os.environ.get("AGENTS_CLAUDE_CMD")
+    if override:
+        cmd = shlex.split(override)
+    else:
+        cmd = ["claude", *config.launch_flags(config.load()["permission_mode"])]
     if resume_id:
         cmd += ["--resume", resume_id]
     return cmd
+
+
+def _host(args):
+    """The host for this invocation: --host if given, else the configured default."""
+    return hosts.get(getattr(args, "host", None) or config.load()["host"])
 
 
 def _bind_and_inject(name, pid, is_first_start, inject, sid_hint=None):
@@ -119,6 +133,7 @@ def _up_one(name, host, prompt=None, cwd=None, identity=None, inject=True):
     is_first_start = resume_id is None
     cmd = _claude_cmd(name, resume_id)
     env = dict(os.environ, AGENTS_AGENT_NAME=name)
+    trust.ensure_trusted(acwd)  # so claude's trust dialog can't stall the launch
 
     try:
         launched = host.start(name, cmd, acwd, env, group=group)
@@ -169,7 +184,7 @@ def _selection(args):
 
 
 def cmd_up(args):
-    host = hosts.get(args.host)
+    host = _host(args)
     names, err = _selection(args)
     if err:
         return _err(err)
@@ -220,7 +235,7 @@ def cmd_down(args):
 def _attach_detach(args, op):
     """attach/detach are the same single-target op on a host: a named agent's
     window, or a whole group's session. `op` is 'attach' or 'detach'."""
-    host = hosts.get(args.host)
+    host = _host(args)
     err = _one_target(args)
     if err:
         return _err(err)
@@ -242,15 +257,25 @@ def cmd_detach(args):
 
 def cmd_ls(args):
     agents = db.select(group=args.group, agent_type=args.type)
-    if not agents:
-        print("agents: no agents match" if (args.group or args.type)
-              else "agents: none registered")
-        return 0
+    filtered = args.group or args.type or args.running or args.down
     live = {r.get("sessionId"): r for r in native.list_sessions()}
-    print(f"{'NAME':<16} {'TYPE':<8} {'STATUS':<8} {'GROUP':<12} {'SESSION':<10} ROLE")
+    # Resolve each agent's live status (anything in `live` is up; else "down"),
+    # then apply the status filters. --running keeps live agents, --down the rest.
+    rows = []
     for a in agents:
         sid = a.get("session_id")
         status = live[sid].get("status") if sid in live else "down"
+        if args.running and status == "down":
+            continue
+        if args.down and status != "down":
+            continue
+        rows.append((a, status))
+    if not rows:
+        print("agents: no agents match" if filtered else "agents: none registered")
+        return 0
+    print(f"{'NAME':<16} {'TYPE':<8} {'STATUS':<8} {'GROUP':<12} {'SESSION':<10} ROLE")
+    for a, status in rows:
+        sid = a.get("session_id")
         print(f"{a['name']:<16} {(a.get('type') or ''):<8} {status:<8} "
               f"{(a.get('workspace') or ''):<12} {(sid or '')[:8]:<10} "
               f"{a.get('role') or ''}")
@@ -365,6 +390,205 @@ def cmd_migrate(args):
     return 0
 
 
+def _prompt_yes_no(question, default=True):
+    """Ask a yes/no question on the controlling terminal; return a bool.
+
+    Reads /dev/tty so it still prompts under `curl … | bash` (where stdin is the
+    piped script). With no tty (CI, truly non-interactive), returns the default
+    without blocking.
+    """
+    suffix = " [Y/n] " if default else " [y/N] "
+    try:
+        tty = open("/dev/tty", "r+")
+    except OSError:
+        return default
+    try:
+        tty.write(question + suffix)
+        tty.flush()
+        ans = tty.readline().strip().lower()
+    except OSError:
+        return default
+    finally:
+        tty.close()
+    return default if not ans else ans.startswith("y")
+
+
+def _install_tmux():
+    """Best-effort install of tmux via the platform package manager. Returns ok."""
+    if shutil.which("brew"):
+        cmd = ["brew", "install", "tmux"]
+    elif shutil.which("apt-get"):
+        cmd = ["sudo", "apt-get", "install", "-y", "tmux"]
+    elif shutil.which("dnf"):
+        cmd = ["sudo", "dnf", "install", "-y", "tmux"]
+    else:
+        return False
+    return subprocess.run(cmd).returncode == 0
+
+
+_COMPLETION_MARKER = "# agents shell completion"
+
+
+def _shell_rc():
+    """(shell, rc_path) for the user's login shell, or (None, None) if unknown."""
+    shell = os.path.basename(os.environ.get("SHELL", ""))
+    if shell == "zsh":
+        return "zsh", os.path.expanduser("~/.zshrc")
+    if shell == "bash":
+        return "bash", os.path.expanduser("~/.bashrc")
+    return None, None
+
+
+def _completion_block(shell):
+    if shell == "zsh":
+        # Run compinit only if it hasn't already (e.g. by oh-my-zsh) — a second
+        # compinit is slow and noisy.
+        return (f"\n{_COMPLETION_MARKER}\n"
+                "if ! whence compdef >/dev/null 2>&1; then "
+                "autoload -Uz compinit && compinit; fi\n"
+                "source <(agents completion zsh)\n")
+    return f"\n{_COMPLETION_MARKER}\nsource <(agents completion bash)\n"
+
+
+def _install_completion():
+    """Append the completion source-line to the user's shell rc (idempotent)."""
+    shell, rc = _shell_rc()
+    if not rc:
+        return _err("unknown shell; add `source <(agents completion zsh|bash)` "
+                    "to your shell rc for tab-completion")
+    existing = ""
+    if os.path.exists(rc):
+        try:
+            existing = open(rc).read()
+        except OSError as e:
+            return _err(f"could not read {rc}: {e}")
+    if _COMPLETION_MARKER in existing:
+        print(f"agents: tab-completion already set up in {rc}")
+        return 0
+    if existing and not os.path.exists(rc + ".pre-agents"):
+        try:  # one-time backup
+            with open(rc + ".pre-agents", "w") as f:
+                f.write(existing)
+        except OSError:
+            pass
+    try:
+        with open(rc, "a") as f:
+            f.write(_completion_block(shell))
+    except OSError as e:
+        return _err(f"could not write {rc}: {e}")
+    print(f"agents: tab-completion installed in {rc} — run `source {rc}` to use it now")
+    return 0
+
+
+def _install_ag_shortcut():
+    """Create a short `ag` alias (a symlink next to `agents`), if `ag` is free.
+
+    `ag` is commonly the_silver_searcher, so we never overwrite an existing one.
+    """
+    if shutil.which("ag"):
+        print("agents: 'ag' is already a command on this system — leaving it alone")
+        return 0
+    agents_path = shutil.which("agents") or os.path.abspath(sys.argv[0])
+    ag_path = os.path.join(os.path.dirname(agents_path), "ag")
+    if os.path.lexists(ag_path):
+        return 0
+    try:
+        os.symlink(agents_path, ag_path)
+    except OSError as e:
+        return _err(f"could not create 'ag' alias: {e}")
+    print(f"agents: added short alias 'ag' -> {agents_path}")
+    return 0
+
+
+def cmd_configure(args):
+    """Write ~/.agents/config.json (permission mode, host) and offer to install
+    tmux. Interactive by default; flags set values without prompting, and
+    --no-input accepts defaults (what the installer uses under pipe-to-bash)."""
+    cfg = config.load()
+
+    if args.mode:
+        cfg["permission_mode"] = args.mode
+    elif not args.no_input:
+        gentle = cfg["permission_mode"] != "manual"
+        gentle = _prompt_yes_no(
+            "Let launched agents auto-accept file edits? (safer than full "
+            "bypass; recommended)", gentle)
+        cfg["permission_mode"] = "acceptEdits" if gentle else "manual"
+
+    if args.host:
+        cfg["host"] = args.host
+
+    if cfg["host"] == "tmux" and not shutil.which("tmux"):
+        if (not args.no_input) and _prompt_yes_no(
+                "tmux is not installed (the default host). Install it now?", True):
+            print("agents: installing tmux…")
+            if _install_tmux():
+                print("agents: tmux installed")
+            else:
+                print("agents: could not install tmux automatically — install it "
+                      "yourself, or run agents with --host foreground",
+                      file=sys.stderr)
+
+    shell, rc = _shell_rc()
+    did_install = False
+    if shell and not args.no_input:
+        try:
+            installed = os.path.exists(rc) and _COMPLETION_MARKER in open(rc).read()
+        except OSError:
+            installed = False
+        if not installed and _prompt_yes_no(
+                f"Install agents tab-completion into {rc}?", True):
+            did_install = _install_completion() == 0
+
+    if not args.no_input and not shutil.which("ag"):
+        if _prompt_yes_no("Add a short 'ag' alias for agents?", True):
+            _install_ag_shortcut()
+
+    saved = config.save(cfg)
+    bypass = saved["permission_mode"] == "bypassPermissions"
+    print(f"agents: configuration saved to {config.config_path()}")
+    print(f"  permission mode: {saved['permission_mode']}"
+          + ("  (⚠ bypasses all permission checks)" if bypass else ""))
+    print(f"  host:            {saved['host']}")
+
+    # A child process can't source the rc into the parent shell, so the equivalent
+    # of "activate now" is to replace this process with a fresh login shell (which
+    # re-reads the rc, completion and all). Only when interactive and not told to
+    # skip (the installer passes --no-reload — exec'ing there would hijack it).
+    if did_install and not args.no_reload and sys.stdout.isatty():
+        if _prompt_yes_no(f"Reload {shell} now to activate completion?", True):
+            sh = os.environ.get("SHELL") or shell
+            print(f"agents: reloading {shell}…")
+            sys.stdout.flush()
+            os.execvp(sh, [sh, "-l"])  # replaces this process; does not return
+    return 0
+
+
+def cmd_complete(args):
+    """Emit completion candidates for the shell scripts (one per line). Hidden."""
+    if args.kind == "names":
+        items = [a["name"] for a in db.all_agents()]
+    elif args.kind == "groups":
+        items = sorted({a["workspace"] for a in db.all_agents() if a.get("workspace")})
+    elif args.kind == "types":
+        items = home.available_types()
+    else:
+        items = []
+    print("\n".join(items))
+    return 0
+
+
+def cmd_completion(args):
+    """Print the shell completion script, or --install it into your shell rc."""
+    if args.install:
+        return _install_completion()
+    if not args.shell:
+        return _err("specify a shell (zsh|bash) or use --install")
+    from agents import completion
+    print(completion.script(args.shell))
+    return 0
+
+
 def cmd_help(args):
     build_parser().print_help()
     return 0
@@ -373,7 +597,8 @@ def cmd_help(args):
 def build_parser():
     p = argparse.ArgumentParser(prog="agents", description=__doc__.splitlines()[0])
     # Not required: a bare `agents` prints help instead of an argparse error.
-    sub = p.add_subparsers(dest="cmd")
+    # metavar collapses the usage brace-list (and hides the internal `_complete`).
+    sub = p.add_subparsers(dest="cmd", metavar="<command>")
 
     s = sub.add_parser("register", help="register an agent (does not launch)")
     s.add_argument("name")
@@ -394,8 +619,8 @@ def build_parser():
     s.add_argument("name", nargs="?")
     s.add_argument("-g", "--group", help="bring up every agent in this group")
     s.add_argument("-t", "--type", help="bring up every agent of this type")
-    s.add_argument("--host", choices=hosts.CHOICES, default=hosts.DEFAULT,
-                   help=f"pty host (default: {hosts.DEFAULT})")
+    s.add_argument("--host", choices=hosts.CHOICES, default=None,
+                   help="pty host (default: the configured host, tmux)")
     s.add_argument("--prompt")
     s.add_argument("--cwd")
     s.add_argument("--identity")
@@ -411,20 +636,23 @@ def build_parser():
     s = sub.add_parser("attach", aliases=["a"], help="attach to an agent or group")
     s.add_argument("name", nargs="?")
     s.add_argument("-g", "--group", help="attach to this group's session")
-    s.add_argument("--host", choices=hosts.CHOICES, default=hosts.DEFAULT,
-                   help=f"pty host (default: {hosts.DEFAULT})")
+    s.add_argument("--host", choices=hosts.CHOICES, default=None,
+                   help="pty host (default: the configured host, tmux)")
     s.set_defaults(func=cmd_attach)
 
     s = sub.add_parser("detach", aliases=["d"], help="detach from an agent or group")
     s.add_argument("name", nargs="?")
     s.add_argument("-g", "--group", help="detach from this group's session")
-    s.add_argument("--host", choices=hosts.CHOICES, default=hosts.DEFAULT,
-                   help=f"pty host (default: {hosts.DEFAULT})")
+    s.add_argument("--host", choices=hosts.CHOICES, default=None,
+                   help="pty host (default: the configured host, tmux)")
     s.set_defaults(func=cmd_detach)
 
-    s = sub.add_parser("ls", aliases=["list"], help="list agents (filter by group/type)")
+    s = sub.add_parser("ls", aliases=["list"],
+                       help="list agents (filter by group/type/status)")
     s.add_argument("-g", "--group", help="only agents in this group")
     s.add_argument("-t", "--type", help="only agents of this type (e.g. lead, ada)")
+    s.add_argument("--running", action="store_true", help="only agents with a live session")
+    s.add_argument("--down", action="store_true", help="only stopped agents")
     s.set_defaults(func=cmd_ls)
 
     s = sub.add_parser("find", aliases=["search"],
@@ -454,6 +682,32 @@ def build_parser():
     s.add_argument("--link", action="store_true",
                    help="symlink homes instead of copying")
     s.set_defaults(func=cmd_migrate)
+
+    s = sub.add_parser("configure",
+                       help="set defaults (permission mode, host); install tmux")
+    s.add_argument("--mode", choices=config.PERMISSION_MODES,
+                   help="permission mode launched agents run under "
+                        "(default: acceptEdits; bypassPermissions = YOLO)")
+    s.add_argument("--host", choices=hosts.CHOICES, help="default pty host")
+    s.add_argument("--no-input", action="store_true",
+                   help="don't prompt; keep current values / accept defaults")
+    s.add_argument("--no-reload", action="store_true",
+                   help="don't offer to reload the shell after installing completion")
+    s.set_defaults(func=cmd_configure)
+
+    s = sub.add_parser("completion",
+                       help="print (or --install) a shell completion script")
+    s.add_argument("shell", nargs="?", choices=["zsh", "bash"],
+                   help="shell to print the script for")
+    s.add_argument("--install", action="store_true",
+                   help="append the source line to your shell rc instead")
+    s.set_defaults(func=cmd_completion)
+
+    # hidden: the data source the completion scripts call on each <TAB>.
+    # No `help=` kwarg, so argparse omits it from the command listing entirely.
+    s = sub.add_parser("_complete")
+    s.add_argument("kind", choices=["names", "groups", "types"])
+    s.set_defaults(func=cmd_complete)
 
     # `help` as a real subcommand too, so `agents help` works like `agents --help`.
     s = sub.add_parser("help", help="show this help")

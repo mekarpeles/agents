@@ -7,9 +7,9 @@
 `agents` is a system-level command line tool, designed for both agents and
 humans, for managing AI agents.
 
-1. **Message any running agent** — a native socket API pipes a message directly
-   into an agent's running session, ideal for nudging idle agents or wiring them
-   into workflows.
+1. **Send message** to any running agent. A native socket API pipes a message
+   directly into an agent's running session, ideal for nudging idle agents or
+   wiring them into workflows.
 2. **Find and resume past sessions** — search previous sessions and resume the
    one you want.
 3. **Human-readable nicknames** — assign a friendly name to any agent.
@@ -22,20 +22,26 @@ humans, for managing AI agents.
 
 ## Install
 
-Requires [Claude Code](https://claude.ai/code) installed and authenticated.
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mekarpeles/agents/main/install.sh | bash
 ```
 
-Re-run with `--upgrade` to update in place (`… | bash -s -- --upgrade`). Installs
-`agents` (and the `ag` shortcut) plus [cq](https://github.com/mekarpeles/cq) via
-pipx; macOS needs [Homebrew](https://brew.sh). State lives under `~/.agents/`
-(override with `AGENTS_STATE_DIR`).
+Installs `agents` plus [cq](https://github.com/mekarpeles/cq) via pipx (macOS needs
+[Homebrew](https://brew.sh)); re-run with `--upgrade` to update in place
+(`… | bash -s -- --upgrade`). The installer first checks for
+[Claude Code](https://claude.ai/code) and stops if it's missing — install and
+authenticate `claude` first.
+
+For an interactive install it then runs `agents configure` (permission mode, and
+offers to install tmux, shell completion, and a short `ag` alias); a
+non-interactive/agent install skips that — force it with `--configure`, or skip it
+with `--no-configure`. State lives under `~/.agents/` (override with
+`AGENTS_STATE_DIR`).
 
 ## Usage
 
-The command is `agents` (with `ag` as a shorthand alias):
+The command is `agents` (`agents configure` can add a short `ag` alias, if that
+name is free on your system):
 
 ```bash
 agents register pam -g web --role "edge" --identity ./pam.md
@@ -49,11 +55,19 @@ agents find pam               # search past sessions to resume or adopt
 agents ls                     # registered agents + live status
 agents down pam               # stop it   (agents down -g web  stops the group)
 agents rm pam                 # de-register (home dir preserved)
+agents configure              # permission mode, default host, tmux, tab-completion
 ```
 
-`up`, `down`, and `ls` take an agent name or the `-g <group>` / `-t <type>`
-selectors; `attach`/`detach` take a name or `-g`. Hosts: `tmux` (default),
-`herdr`, `foreground` (`--host`). Aliases: `ls`/`list`, `find`/`search`,
+Launched agents run in a configurable **permission mode** — the default,
+`acceptEdits`, auto-accepts file edits but still gates riskier operations; their
+workspace is pre-trusted so `up` can start them unattended. `agents configure`
+(also run by the installer) sets the mode and the default host, and offers to
+install tmux; `--mode bypassPermissions` is the explicit, un-gated opt-in.
+
+`up` and `down` take an agent name or the `-g <group>` / `-t <type>` selectors;
+`ls` filters by `-g`/`-t` and by status (`--running` / `--down`);
+`attach`/`detach` take a name or `-g`. Hosts: `tmux`
+(default), `herdr`, `foreground` (`--host`). Aliases: `ls`/`list`, `find`/`search`,
 `a`/`attach`, `d`/`detach`. An unknown command is rejected (it never becomes an
 agent name), so `agents list` and `agents up --help` can't register junk agents.
 
@@ -103,6 +117,24 @@ dc33a929-b44e-448f-b1d5-adaa9cbd2681  idle       698  Projects     PAM agent res
 `STATE` is `running` (a live process is attached), `idle` (resumable transcript
 on disk, no process), or `gone` (transcript cleaned up — shown only with
 `--all`). `--json` emits one object per line; `-n` caps the count.
+
+## Shell completion
+
+Tab-complete subcommands and your registered agent names (and `-g` groups, `-t`
+types) — completion reads the live registry on each `<TAB>`. The installer and
+`agents configure` offer to set this up; to do it yourself:
+
+```bash
+agents completion --install    # appends the source-line to ~/.zshrc or ~/.bashrc
+```
+
+Then `source` your rc (or open a new terminal) and `agents up <TAB>` offers the
+agents you've registered. To wire it by hand instead, source the script directly:
+
+```bash
+source <(agents completion zsh)    # ~/.zshrc (needs compinit)
+source <(agents completion bash)   # ~/.bashrc
+```
 
 ## Tests
 

@@ -46,10 +46,12 @@ agents register throwaway --type ada && agents up throwaway
 
 ## Gotchas (learned the hard way)
 
-- **`agents up` runs `claude --dangerously-skip-permissions`.** A supervising
-  agent running under Claude Code auto-mode is *denied* from launching it
-  ("Create Unsafe Agents") — run `agents up` from a human terminal. See the
-  open issue about making this opt-in.
+- **Permission mode is configurable; the default is gentle.** `up` launches
+  `claude --permission-mode <mode>` (default `acceptEdits`) and pre-trusts the cwd
+  via `trust.py` so it still starts unattended. Only `--mode bypassPermissions`
+  (the `--dangerously-skip-permissions` opt-in) is un-gated — and a *supervising*
+  agent under Claude Code auto-mode is still denied from launching that one
+  ("Create Unsafe Agents"), so start bypass agents from a human terminal.
 - **claudio is gone, vendored as `transport.py`.** Do not re-add a `claudio`
   dependency; the socket protocol is self-contained there.
 - **Layout is src-layout:** the package is `src/agents/`, imported as `agents`.

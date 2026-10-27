@@ -10,7 +10,9 @@ requires-python = ">=3.9"
 dependencies = []
 
 [project.scripts]
-ag = "agents.cli:main"
+# Only `agents` is installed by the package; the short `ag` alias is created
+# on demand by `agents configure` (and the installer), but only when the name
+# isn't already taken — `ag` is commonly the_silver_searcher.
 agents = "agents.cli:main"
 
 [tool.setuptools.packages.find]

@@ -290,3 +290,16 @@ def test_rm_keeps_home(env):
     env["db"].remove("tmp")
     assert env["db"].get("tmp") is None
     assert os.path.isdir(h)  # home preserved
+
+
+def test_ls_status_filters(env, capsys):
+    env["db"].register("pam")
+    env["db"].register("ada")
+    p = env["cli"].build_parser()
+    # no live sessions bound -> every agent reads as "down"
+    p.parse_args(["ls", "--down"]).func(p.parse_args(["ls", "--down"]))
+    out = capsys.readouterr().out
+    assert "pam" in out and "ada" in out
+    p.parse_args(["ls", "--running"]).func(p.parse_args(["ls", "--running"]))
+    out = capsys.readouterr().out
+    assert "pam" not in out and "no agents match" in out
