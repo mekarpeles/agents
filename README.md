@@ -55,8 +55,7 @@ agents whoami                 # who am I? — an agent identifies itself (--json
 agents find pam               # search past sessions to resume or adopt
 agents ls                     # registered agents + status light (● up/down)
 agents down pam               # stop it   (agents down --group web  stops the group)
-agents archive pam            # hide from ls (agents ls -a  shows archived; unarchive restores)
-agents rm pam                 # de-register (home dir preserved)
+agents rm pam                 # remove (archive): hidden from ls, kept (ls -a shows it)
 agents configure              # permission mode, default host, tmux, tab-completion
 ```
 
@@ -90,9 +89,11 @@ Types are bundled in the repo under `src/agents/types/`. Claude runs in the home
 dir by default (so `AGENTS.md` loads); pass `--cwd <repo>` to run it in a project
 checkout instead.
 
-A launched agent knows its own name from the `AGENTS_AGENT_NAME` environment
-variable that `up` sets; `agents whoami` resolves that to its registry row, home,
-session binding, and task (so an agent can ask "who am I?").
+Every Claude session knows its own id (`$CLAUDE_CODE_SESSION_ID`), and the registry
+binds that id to an agent — so `agents whoami` identifies the session by the id it
+already has (no injected name), resolving it to the registry row, home, and task.
+It works for an adopted session too, not only ones `agents` launched; `--json` for
+machine use, or `--session-id <id>` to look up another session.
 
 ## Groups & types
 

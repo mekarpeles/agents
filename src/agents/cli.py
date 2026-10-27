@@ -97,6 +97,7 @@ def cmd_register(args):
     db.register(args.name, agent_type=args.type, role=args.role,
                 workspace=args.workspace, cwd=args.cwd, initial_prompt=args.prompt,
                 identity_path=args.identity, session_id=args.session_id)
+    db.set_archived(args.name, False)  # (re-)registering reactivates an archived agent
     home.ensure_home(args.name, cwd=args.cwd, agent_type=args.type,
                      identity_path=args.identity, initial_prompt=args.prompt,
                      session_id=args.session_id)
@@ -112,6 +113,8 @@ def _up_one(name, host, prompt=None, cwd=None, identity=None, inject=True):
     if reg is None:
         db.register(name, cwd=cwd)   # one-shot up of an unregistered name
         reg = db.get(name)
+    if reg.get("archived"):
+        db.set_archived(name, False)  # launching an archived agent restores it
     acwd = home.agent_cwd(name) or reg.get("cwd") or cwd or os.getcwd()
     home.ensure_home(name, cwd=acwd, identity_path=identity,
                      initial_prompt=prompt or reg.get("initial_prompt"))
@@ -361,14 +364,22 @@ def cmd_send(args):
 
 
 def cmd_whoami(args):
-    """Identify the agent this process is running as, from $AGENTS_AGENT_NAME
-    (set by `up`). The way a launched agent answers "who am I?" — resolving its
-    name to its registry row, home, session binding, and task."""
-    name = os.environ.get("AGENTS_AGENT_NAME")
-    if not name:
-        return _err("not running as a managed agent "
-                    "($AGENTS_AGENT_NAME is unset — launch me with `agents up`)")
-    reg = db.get(name) or {}
+    """Identify the agent this session is, by its Claude session id.
+
+    Every Claude session knows its own id ($CLAUDE_CODE_SESSION_ID), and the
+    registry binds that id to an agent — so a session identifies itself by the id
+    it already has, not by anything `up` had to inject. That means it works for an
+    adopted session too, not only ones `agents` launched.
+    """
+    sid = args.session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not sid:
+        return _err("no session id to look up ($CLAUDE_CODE_SESSION_ID is unset) "
+                    "— pass --session-id <id>")
+    reg = db.get_by_session(sid)
+    if not reg:
+        return _err(f"session {sid[:8]} is not a registered agent "
+                    f"(register it: agents register <name> --session-id {sid})")
+    name = reg["name"]
     task = home.initial_prompt(name)
     info = {
         "name": name,
@@ -376,9 +387,9 @@ def cmd_whoami(args):
         "group": reg.get("workspace"),
         "role": reg.get("role"),
         "cwd": home.agent_cwd(name),
-        "session_id": reg.get("session_id") or home.read_session_id(name),
+        "session_id": sid,
         "home": home.home_dir(name),
-        "registered": bool(reg),
+        "archived": bool(reg.get("archived")),
     }
     if args.json:
         import json as _json
@@ -387,42 +398,31 @@ def cmd_whoami(args):
     tag = " ".join(p for p in (
         f"type {info['type']}" if info["type"] else "",
         f"group {info['group']}" if info["group"] else "") if p)
-    print(f"You are '{name}'" + (f"  ({tag})" if tag else ""))
-    if not info["registered"]:
-        print(f"  (not in the registry) home: {info['home']}")
-        return 0
+    print(f"You are '{name}'" + (f"  ({tag})" if tag else "")
+          + ("  [archived]" if info["archived"] else ""))
     if info["role"]:
         print(f"  role     {info['role']}")
     print(f"  cwd      {info['cwd']}")
-    if info["session_id"]:
-        print(f"  session  {info['session_id'][:8]}")
+    print(f"  session  {sid[:8]}")
     print(f"  home     {info['home']}  (AGENTS.md + PROMPT.md)")
     if task:
         print(f"  task     {task.strip().splitlines()[0][:72]}")
     return 0
 
 
-def cmd_archive(args):
-    if not db.get(args.name):
-        return _err(f"no agent named '{args.name}'")
-    db.set_archived(args.name, True)
-    print(f"agents: archived '{args.name}' — hidden from `ls` "
-          f"(`agents ls -a` shows it; `agents unarchive {args.name}` restores it)")
-    return 0
-
-
-def cmd_unarchive(args):
-    if not db.get(args.name):
-        return _err(f"no agent named '{args.name}'")
-    db.set_archived(args.name, False)
-    print(f"agents: restored '{args.name}'")
-    return 0
-
-
 def cmd_rm(args):
-    db.remove(args.name)
-    print(f"agents: de-registered '{args.name}' (home dir preserved at "
-          f"{home.home_dir(args.name)})")
+    """Remove (archive) an agent: hidden from `ls` but kept so it can come back
+    (`ls -a` to see it, `up`/`register` to restore). --purge deletes the row."""
+    if not db.get(args.name):
+        return _err(f"no agent named '{args.name}'")
+    if args.purge:
+        db.remove(args.name)
+        print(f"agents: purged '{args.name}' from the registry "
+              f"(home dir kept at {home.home_dir(args.name)})")
+        return 0
+    db.set_archived(args.name, True)
+    print(f"agents: removed '{args.name}' — hidden from `ls` "
+          f"(`agents ls -a` shows it; `agents up {args.name}` restores it)")
     return 0
 
 
@@ -667,9 +667,6 @@ def cmd_complete(args):
         items = sorted({a["workspace"] for a in db.all_agents() if a.get("workspace")})
     elif args.kind == "types":
         items = home.available_types()
-    elif args.kind == "archived":
-        items = [a["name"] for a in db.select(include_archived=True)
-                 if a.get("archived")]
     else:
         items = []
     print("\n".join(items))
@@ -777,20 +774,16 @@ def build_parser():
     s.set_defaults(func=cmd_send)
 
     s = sub.add_parser("whoami",
-                       help="identify the agent you're running as ($AGENTS_AGENT_NAME)")
+                       help="identify this session's agent (by $CLAUDE_CODE_SESSION_ID)")
+    s.add_argument("--session-id", dest="session_id",
+                   help="look up this sessionId instead of the current session's")
     s.add_argument("--json", action="store_true", help="machine-readable output")
     s.set_defaults(func=cmd_whoami)
 
-    s = sub.add_parser("archive", help="archive an agent (hide from ls; keeps it)")
+    s = sub.add_parser("rm", help="remove an agent (archive; hidden from ls, kept)")
     s.add_argument("name")
-    s.set_defaults(func=cmd_archive)
-
-    s = sub.add_parser("unarchive", help="restore an archived agent")
-    s.add_argument("name")
-    s.set_defaults(func=cmd_unarchive)
-
-    s = sub.add_parser("rm", help="de-register an agent (keeps home dir)")
-    s.add_argument("name")
+    s.add_argument("--purge", action="store_true",
+                   help="delete the registry row instead of archiving (keeps home dir)")
     s.set_defaults(func=cmd_rm)
 
     s = sub.add_parser("migrate", help="migrate cmux state (~/.cmux) into agents")
@@ -823,7 +816,7 @@ def build_parser():
     # hidden: the data source the completion scripts call on each <TAB>.
     # No `help=` kwarg, so argparse omits it from the command listing entirely.
     s = sub.add_parser("_complete")
-    s.add_argument("kind", choices=["names", "groups", "types", "archived"])
+    s.add_argument("kind", choices=["names", "groups", "types"])
     s.set_defaults(func=cmd_complete)
 
     # `help` as a real subcommand too, so `agents help` works like `agents --help`.

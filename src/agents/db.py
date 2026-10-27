@@ -105,6 +105,16 @@ def get(name):
         return dict(row) if row else None
 
 
+def get_by_session(session_id):
+    """The agent bound to a Claude sessionId, or None. The reverse of the
+    binding, so a session can identify itself from $CLAUDE_CODE_SESSION_ID."""
+    init()
+    with _conn() as c:
+        row = c.execute("SELECT * FROM agents WHERE session_id=?",
+                        (session_id,)).fetchone()
+        return dict(row) if row else None
+
+
 def select(group=None, agent_type=None, include_archived=False):
     """Agents filtered by group and/or type; all if neither given.
 

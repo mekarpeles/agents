@@ -305,10 +305,11 @@ def test_ls_status_filters(env, capsys):
     assert "pam" not in out and "no agents match" in out
 
 
-def test_whoami_identifies_from_env(env, monkeypatch, capsys):
-    env["db"].register("ada-1581", agent_type="ada", workspace="br-prs", role="eng")
+def test_whoami_by_session_id(env, monkeypatch, capsys):
+    env["db"].register("ada-1581", agent_type="ada", workspace="br-prs",
+                       role="eng", session_id="sess-123")
     env["home"].ensure_home("ada-1581", cwd="/tmp/x", initial_prompt="do the TTS swap")
-    monkeypatch.setenv("AGENTS_AGENT_NAME", "ada-1581")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-123")
     a = env["cli"].build_parser().parse_args(["whoami"])
     assert a.func(a) == 0
     out = capsys.readouterr().out
@@ -316,51 +317,58 @@ def test_whoami_identifies_from_env(env, monkeypatch, capsys):
     assert "do the TTS swap" in out
 
 
-def test_whoami_json(env, monkeypatch, capsys):
+def test_whoami_json_and_explicit_flag(env, monkeypatch, capsys):
     import json
-    env["db"].register("pam", workspace="web")
+    env["db"].register("pam", workspace="web", session_id="s-pam")
     env["home"].ensure_home("pam", cwd="/tmp/x")
-    monkeypatch.setenv("AGENTS_AGENT_NAME", "pam")
-    a = env["cli"].build_parser().parse_args(["whoami", "--json"])
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    # --session-id overrides the env; works without CLAUDE_CODE_SESSION_ID set
+    a = env["cli"].build_parser().parse_args(["whoami", "--session-id", "s-pam", "--json"])
     assert a.func(a) == 0
     d = json.loads(capsys.readouterr().out)
-    assert d["name"] == "pam" and d["group"] == "web"
+    assert d["name"] == "pam" and d["group"] == "web" and d["session_id"] == "s-pam"
 
 
-def test_whoami_unset_is_error(env, monkeypatch):
-    monkeypatch.delenv("AGENTS_AGENT_NAME", raising=False)
-    a = env["cli"].build_parser().parse_args(["whoami"])
+def test_whoami_errors(env, monkeypatch):
+    p = env["cli"].build_parser()
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    a = p.parse_args(["whoami"])            # no session id at all
+    assert a.func(a) == 1
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "not-a-registered-sid")
+    a = p.parse_args(["whoami"])            # session isn't a registered agent
     assert a.func(a) == 1
 
 
-def test_archive_unarchive_and_ls_status(env, capsys):
+def test_rm_archives_hides_and_restores(env, capsys):
     db, cli = env["db"], env["cli"]
     db.register("pam")
     db.register("ada")
     p = cli.build_parser()
 
-    a = p.parse_args(["archive", "pam"])
-    assert a.func(a) == 0
-    capsys.readouterr()  # drain the archive message
+    a = p.parse_args(["rm", "pam"]); assert a.func(a) == 0
+    capsys.readouterr()  # drain the rm message
 
-    # default ls hides archived; ada shows as down
+    # default ls hides the removed (archived) agent
     a = p.parse_args(["ls"]); a.func(a)
     out = capsys.readouterr().out
     assert "ada" in out and "down" in out and "pam" not in out
 
-    # -a reveals pam as archived
+    # -a reveals it as archived; completion excludes it
     a = p.parse_args(["ls", "-a"]); a.func(a)
-    out = capsys.readouterr().out
-    assert "pam" in out and "archived" in out
-
-    # completion: names excludes archived, 'archived' kind lists it
+    assert "pam" in (out2 := capsys.readouterr().out) and "archived" in out2
     a = p.parse_args(["_complete", "names"]); a.func(a)
-    names = capsys.readouterr().out.split()
-    assert "ada" in names and "pam" not in names
-    a = p.parse_args(["_complete", "archived"]); a.func(a)
-    assert capsys.readouterr().out.split() == ["pam"]
+    assert "pam" not in capsys.readouterr().out.split()
 
-    a = p.parse_args(["unarchive", "pam"])
-    assert a.func(a) == 0
+    # re-registering restores it
+    a = p.parse_args(["register", "pam"]); assert a.func(a) == 0
+    capsys.readouterr()
     a = p.parse_args(["ls"]); a.func(a)
     assert "pam" in capsys.readouterr().out
+
+
+def test_rm_purge_deletes_row(env):
+    db, cli = env["db"], env["cli"]
+    db.register("pam")
+    a = cli.build_parser().parse_args(["rm", "pam", "--purge"])
+    assert a.func(a) == 0
+    assert db.get("pam") is None

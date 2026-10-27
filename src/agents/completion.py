@@ -17,8 +17,8 @@ ZSH = r"""#compdef agents
 _agents() {
   local cmd prev
   if (( CURRENT == 2 )); then
-    compadd -- register up down attach detach send list find whoami archive \
-               unarchive rm migrate configure completion help
+    compadd -- register up down attach detach send list find whoami rm migrate \
+               configure completion help
     return
   fi
   cmd=$words[2]
@@ -28,8 +28,7 @@ _agents() {
     -t|--type)  compadd -- ${(f)"$(agents _complete types 2>/dev/null)"};  return ;;
   esac
   case $cmd in
-    unarchive)  compadd -- ${(f)"$(agents _complete archived 2>/dev/null)"} ;;
-    up|down|attach|detach|send|rm|archive|a|d)
+    up|down|attach|detach|send|rm|a|d)
       compadd -- ${(f)"$(agents _complete names 2>/dev/null)"} ;;
   esac
 }
@@ -42,7 +41,7 @@ BASH = r"""_agents() {
   prev="${COMP_WORDS[COMP_CWORD-1]}"
   cmd="${COMP_WORDS[1]}"
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "register up down attach detach send list find whoami archive unarchive rm migrate configure completion help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "register up down attach detach send list find whoami rm migrate configure completion help" -- "$cur") )
     return
   fi
   case "$prev" in
@@ -50,8 +49,7 @@ BASH = r"""_agents() {
     -t|--type)  COMPREPLY=( $(compgen -W "$(agents _complete types 2>/dev/null)" -- "$cur") ); return ;;
   esac
   case "$cmd" in
-    unarchive)  COMPREPLY=( $(compgen -W "$(agents _complete archived 2>/dev/null)" -- "$cur") ) ;;
-    up|down|attach|detach|send|rm|archive|a|d)
+    up|down|attach|detach|send|rm|a|d)
       COMPREPLY=( $(compgen -W "$(agents _complete names 2>/dev/null)" -- "$cur") ) ;;
   esac
 }
