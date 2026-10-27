@@ -17,8 +17,9 @@ designed to be used by both agents and humans.
    together with `up --group <group>` (one tmux session, a window per agent).
 5. **Persistent per-agent setup** — a durable home directory, skills, auth, and
    per-agent tooling for each agent.
-6. **Remove** an agent when it's no longer needed (`rm` de-registers it; the home
-   directory is kept).
+6. **Remove / archive** an agent when it's no longer needed — `rm` hides it from
+   `ls` but keeps it (`ls -a` to see it, `up`/`register` to restore);
+   `rm --purge` deletes the registry row. The home directory is always kept.
 
 ## Install
 
@@ -130,8 +131,8 @@ on disk, no process), or `gone` (transcript cleaned up — shown only with
 
 ## Shell completion
 
-Tab-complete subcommands and your registered agent names (and `-g` groups, `-t`
-types) — completion reads the live registry on each `<TAB>`. The installer and
+Tab-complete subcommands and your registered agent names (and `--group` groups,
+`--type` types) — completion reads the live registry on each `<TAB>`. The installer and
 `agents configure` offer to set this up; to do it yourself:
 
 ```bash

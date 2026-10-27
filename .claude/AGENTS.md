@@ -29,16 +29,24 @@ the tmux server, and the Claude binary (mirrors cmux's hard-won discipline):
 
 ```bash
 export AGENTS_STATE_DIR=$(mktemp -d) CLAUDE_SESSIONS_DIR=$(mktemp -d) TMUX_TMPDIR=$(mktemp -d)
+export CLAUDE_CONFIG_PATH=$(mktemp)   # trust.py writes ~/.claude.json on `up` — isolate it!
 export AGENTS_CLAUDE_CMD="python3 /path/to/a/fake_claude.py"   # not the real claude
 agents register throwaway --type ada && agents up throwaway
 ```
 
+`CLAUDE_CONFIG_PATH` matters: `up` calls `trust.py` to pre-accept the workspace
+trust in `~/.claude.json`; without the override a smoke test rewrites your real
+Claude config.
+
 ## Conventions
 
-- **Terminology is settled — use it:** a set of agents is a **group** (`-g`), never
-  "team" or "workspace" (the SQL column is `workspace` only because `group` is a
-  reserved word). The two read commands are **`ls`** (the registry) and **`find`**
-  (Claude's session history). A kind of agent is a **type** (`-t`): `ada`, `lead`.
+- **Terminology is settled — use it:** a set of agents is a **group** (`--group`,
+  short `-g`), never "team" or "workspace" (the SQL column is `workspace` only
+  because `group` is a reserved word). A kind of agent is a **type** (`--type`,
+  short `-t`): `ada`, `lead`. Lead with the long form in docs/help — the bare
+  `-g`/`-t` confused the maintainer. The reads: **`ls`** (registry, with status
+  lights + archive), **`find`** (Claude session history), **`whoami`** (this
+  session, by `$CLAUDE_CODE_SESSION_ID`).
 - **Agent types** live in `src/agents/types/<type>/AGENTS.md` (the doctrine an
   agent is seeded with). Distinct from a running agent's **`PROMPT.md`** (its task).
 - **Work is tracked in GitHub issues**, not in markdown TODOs. If you find a plan
@@ -52,6 +60,12 @@ agents register throwaway --type ada && agents up throwaway
   (the `--dangerously-skip-permissions` opt-in) is un-gated — and a *supervising*
   agent under Claude Code auto-mode is still denied from launching that one
   ("Create Unsafe Agents"), so start bypass agents from a human terminal.
+- **`rm` archives, it doesn't delete.** It sets the `archived` flag (hidden from
+  `ls`; `up`/`register` restore it); `rm --purge` is the hard delete. `db.select`
+  excludes archived by default, so selectors and completion skip them too.
+- **`whoami` keys on `$CLAUDE_CODE_SESSION_ID`, not `$AGENTS_AGENT_NAME`.** Every
+  Claude session exports its id and it equals the registry's bound `session_id`;
+  `db.get_by_session` reverse-looks-it-up. Don't reintroduce name-via-env identity.
 - **claudio is gone, vendored as `transport.py`.** Do not re-add a `claudio`
   dependency; the socket protocol is self-contained there.
 - **Layout is src-layout:** the package is `src/agents/`, imported as `agents`.

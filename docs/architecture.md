@@ -12,7 +12,7 @@ bracketed-paste injection to carry.
 Each layer owns one job; delivery is independent of where an agent runs.
 
 ```
-  registry   agents.db (SQLite/WAL)  — names, group, type, the sessionId binding
+  registry   agents.db (SQLite/WAL)  — names, group, type, archive, sessionId binding
   host       hosts.py                — where claude runs: tmux | herdr | foreground
   transport  transport.py            — deliver to a running agent's native socket
 ```
@@ -48,8 +48,12 @@ migrate}`, `home → db`; everything else is a leaf. No cycles.
   `identity.md` (optional) · `cwd` · `last-session-id`.
 - **Host** — where claude runs; one pluggable seam (`hosts.py`).
 - **Transport** — native socket delivery, host-agnostic.
-- **Selector** — `name | -g group | -t type`, the one way to target agents.
-- **Session binding** — the `sessionId`, which makes resume correct.
+- **Selector** — `name | --group group | --type type`, the one way to target agents.
+- **Session binding** — the `sessionId`, which makes resume correct *and* lets a
+  session identify itself (`whoami`).
+- **Archive** — `rm` sets the `archived` flag (soft-hide) rather than deleting;
+  `select` skips archived rows, so `ls`/selectors/completion ignore them until
+  `-a`. `rm --purge` deletes the row.
 
 ## Binding by sessionId (not cwd-recency)
 
@@ -59,6 +63,11 @@ session in the same cwd could steal (the misattribution bug). `agents` launches
 record's `sessionId` directly. A resume passes `--resume <sessionId>`; the id
 survives, so a resume needs no detection. (The tmux host `exec`s claude so the
 pane pid *is* claude's.)
+
+The same binding runs in reverse for identity: every Claude session exports
+`$CLAUDE_CODE_SESSION_ID` (equal to its bound sessionId), so `whoami` reads that
+and reverse-looks-up the registry (`db.get_by_session`) — no injected agent name,
+and it works for adopted sessions too.
 
 ## Home directory — the handoff
 
@@ -88,15 +97,17 @@ the pid resolved from the sessionId, and the window/pane closes when claude exit
 
 | category | commands | reads/acts on |
 |---|---|---|
-| **Query** | `ls` (registry), `find` (Claude session history) | — |
+| **Query** | `ls` (registry), `find` (sessions), `whoami` (this session) | — |
 | **Provision** | `register`, `migrate`, `configure` | home, type, tooling, config |
-| **Manage** | `rm` | the registry row |
+| **Manage** | `rm` (archive; `--purge` deletes) | the registry row |
 | **Communicate** | `send` | a running agent's socket |
 | **Operate** | `up`, `down`, `attach`, `detach` | the live process |
 
 `ls` and `find` are both reads but on different objects: `ls` lists agents you
 manage; `find` searches every Claude session on the machine so you can adopt one
-(`register --session-id`). `up`/`down`/`ls` all take the `name | -g | -t` selector.
+(`register --session-id`). `up` and `down` take the `name | --group | --type`
+selector; `ls` filters by `--group`/`--type` and by status (`--running`/`--down`/
+`--archived`, with archived hidden unless `-a`) and prints a colored status light.
 
 ## Launch mode & trust
 
