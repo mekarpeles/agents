@@ -331,3 +331,36 @@ def test_whoami_unset_is_error(env, monkeypatch):
     monkeypatch.delenv("AGENTS_AGENT_NAME", raising=False)
     a = env["cli"].build_parser().parse_args(["whoami"])
     assert a.func(a) == 1
+
+
+def test_archive_unarchive_and_ls_status(env, capsys):
+    db, cli = env["db"], env["cli"]
+    db.register("pam")
+    db.register("ada")
+    p = cli.build_parser()
+
+    a = p.parse_args(["archive", "pam"])
+    assert a.func(a) == 0
+    capsys.readouterr()  # drain the archive message
+
+    # default ls hides archived; ada shows as down
+    a = p.parse_args(["ls"]); a.func(a)
+    out = capsys.readouterr().out
+    assert "ada" in out and "down" in out and "pam" not in out
+
+    # -a reveals pam as archived
+    a = p.parse_args(["ls", "-a"]); a.func(a)
+    out = capsys.readouterr().out
+    assert "pam" in out and "archived" in out
+
+    # completion: names excludes archived, 'archived' kind lists it
+    a = p.parse_args(["_complete", "names"]); a.func(a)
+    names = capsys.readouterr().out.split()
+    assert "ada" in names and "pam" not in names
+    a = p.parse_args(["_complete", "archived"]); a.func(a)
+    assert capsys.readouterr().out.split() == ["pam"]
+
+    a = p.parse_args(["unarchive", "pam"])
+    assert a.func(a) == 0
+    a = p.parse_args(["ls"]); a.func(a)
+    assert "pam" in capsys.readouterr().out

@@ -4,8 +4,8 @@
 
 <h1 align="center">agents</h1>
 
-`agents` is a system-level command line tool, designed for both agents and
-humans, for managing AI agents.
+`agents` is a system-level command line tool for managing AI agent sessions,
+designed to be used by both agents and humans.
 
 1. **Send message** to any running agent. A native socket API pipes a message
    directly into an agent's running session, ideal for nudging idle agents or
@@ -53,8 +53,9 @@ agents attach pam             # attach to its tmux window (Ctrl-b d to detach)
 agents send pam "status?"     # pipe a message into the running session
 agents whoami                 # who am I? — an agent identifies itself (--json too)
 agents find pam               # search past sessions to resume or adopt
-agents ls                     # registered agents + live status
+agents ls                     # registered agents + status light (● up/down)
 agents down pam               # stop it   (agents down --group web  stops the group)
+agents archive pam            # hide from ls (agents ls -a  shows archived; unarchive restores)
 agents rm pam                 # de-register (home dir preserved)
 agents configure              # permission mode, default host, tmux, tab-completion
 ```
@@ -66,8 +67,10 @@ workspace is pre-trusted so `up` can start them unattended. `agents configure`
 install tmux; `--mode bypassPermissions` is the explicit, un-gated opt-in.
 
 `up` and `down` take an agent name or the `--group <group>` / `--type <type>`
-selectors (short: `-g` / `-t`); `ls` filters by `--group`/`--type` and by status
-(`--running` / `--down`); `attach`/`detach` take a name or `--group`. Hosts:
+selectors (short: `-g` / `-t`). `ls` shows a status light — **green** up,
+**orange** down, **red** archived — hides archived agents unless you pass
+`-a`/`--all`, and filters by `--group`/`--type`/`--running`/`--down`/`--archived`.
+`attach`/`detach` take a name or `--group`. Hosts:
 `tmux` (default), `herdr`, `foreground` (`--host`). Short aliases: `list` (`ls`),
 `attach` (`a`), `detach` (`d`). An unknown command is rejected (it never becomes
 an agent name), so `agents list` and `agents up --help` can't register junk agents.

@@ -255,29 +255,45 @@ def cmd_detach(args):
     return _attach_detach(args, "detach")
 
 
+# The status light: green = up, orange = down, red = archived.
+_STATUS_COLOR = {"up": "32", "down": "38;5;208", "archived": "31"}
+
+
+def _dot(status):
+    """A colored status light (plain '●' when stdout isn't a terminal)."""
+    code = _STATUS_COLOR.get(status, "0")
+    return f"\033[{code}m●\033[0m" if sys.stdout.isatty() else "●"
+
+
 def cmd_ls(args):
-    agents = db.select(group=args.group, agent_type=args.type)
-    filtered = args.group or args.type or args.running or args.down
-    live = {r.get("sessionId"): r for r in native.list_sessions()}
-    # Resolve each agent's live status (anything in `live` is up; else "down"),
-    # then apply the status filters. --running keeps live agents, --down the rest.
+    # Archived agents are hidden unless asked for (-a / --archived).
+    show_archived = args.all or args.archived
+    agents = db.select(group=args.group, agent_type=args.type,
+                       include_archived=show_archived)
+    filtered = bool(args.group or args.type or args.running or args.down
+                    or args.archived)
+    live = {r.get("sessionId") for r in native.list_sessions()}
     rows = []
     for a in agents:
-        sid = a.get("session_id")
-        status = live[sid].get("status") if sid in live else "down"
-        if args.running and status == "down":
+        if a.get("archived"):
+            status = "archived"
+        else:
+            status = "up" if a.get("session_id") in live else "down"
+        if args.running and status != "up":
             continue
         if args.down and status != "down":
+            continue
+        if args.archived and status != "archived":
             continue
         rows.append((a, status))
     if not rows:
         print("agents: no agents match" if filtered else "agents: none registered")
         return 0
-    print(f"{'NAME':<16} {'TYPE':<8} {'STATUS':<8} {'GROUP':<12} {'SESSION':<10} ROLE")
+    print(f"  {'NAME':<16} {'TYPE':<8} {'STATUS':<9} {'GROUP':<12} {'SESSION':<10} ROLE")
     for a, status in rows:
-        sid = a.get("session_id")
-        print(f"{a['name']:<16} {(a.get('type') or ''):<8} {status:<8} "
-              f"{(a.get('workspace') or ''):<12} {(sid or '')[:8]:<10} "
+        sid = (a.get("session_id") or "")[:8]
+        print(f"{_dot(status)} {a['name']:<16} {(a.get('type') or ''):<8} "
+              f"{status:<9} {(a.get('workspace') or ''):<12} {sid:<10} "
               f"{a.get('role') or ''}")
     return 0
 
@@ -383,6 +399,23 @@ def cmd_whoami(args):
     print(f"  home     {info['home']}  (AGENTS.md + PROMPT.md)")
     if task:
         print(f"  task     {task.strip().splitlines()[0][:72]}")
+    return 0
+
+
+def cmd_archive(args):
+    if not db.get(args.name):
+        return _err(f"no agent named '{args.name}'")
+    db.set_archived(args.name, True)
+    print(f"agents: archived '{args.name}' — hidden from `ls` "
+          f"(`agents ls -a` shows it; `agents unarchive {args.name}` restores it)")
+    return 0
+
+
+def cmd_unarchive(args):
+    if not db.get(args.name):
+        return _err(f"no agent named '{args.name}'")
+    db.set_archived(args.name, False)
+    print(f"agents: restored '{args.name}'")
     return 0
 
 
@@ -634,6 +667,9 @@ def cmd_complete(args):
         items = sorted({a["workspace"] for a in db.all_agents() if a.get("workspace")})
     elif args.kind == "types":
         items = home.available_types()
+    elif args.kind == "archived":
+        items = [a["name"] for a in db.select(include_archived=True)
+                 if a.get("archived")]
     else:
         items = []
     print("\n".join(items))
@@ -718,6 +754,9 @@ def build_parser():
     s.add_argument("-t", "--type", help="only agents of this type (e.g. lead, ada)")
     s.add_argument("--running", action="store_true", help="only agents with a live session")
     s.add_argument("--down", action="store_true", help="only stopped agents")
+    s.add_argument("-a", "--all", action="store_true",
+                   help="include archived agents (hidden by default)")
+    s.add_argument("--archived", action="store_true", help="only archived agents")
     s.set_defaults(func=cmd_ls)
 
     s = sub.add_parser("find",
@@ -741,6 +780,14 @@ def build_parser():
                        help="identify the agent you're running as ($AGENTS_AGENT_NAME)")
     s.add_argument("--json", action="store_true", help="machine-readable output")
     s.set_defaults(func=cmd_whoami)
+
+    s = sub.add_parser("archive", help="archive an agent (hide from ls; keeps it)")
+    s.add_argument("name")
+    s.set_defaults(func=cmd_archive)
+
+    s = sub.add_parser("unarchive", help="restore an archived agent")
+    s.add_argument("name")
+    s.set_defaults(func=cmd_unarchive)
 
     s = sub.add_parser("rm", help="de-register an agent (keeps home dir)")
     s.add_argument("name")
@@ -776,7 +823,7 @@ def build_parser():
     # hidden: the data source the completion scripts call on each <TAB>.
     # No `help=` kwarg, so argparse omits it from the command listing entirely.
     s = sub.add_parser("_complete")
-    s.add_argument("kind", choices=["names", "groups", "types"])
+    s.add_argument("kind", choices=["names", "groups", "types", "archived"])
     s.set_defaults(func=cmd_complete)
 
     # `help` as a real subcommand too, so `agents help` works like `agents --help`.

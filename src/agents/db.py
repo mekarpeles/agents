@@ -41,13 +41,16 @@ def init():
                 identity_path   TEXT,
                 session_id      TEXT,
                 registered_at   TEXT,
-                started_at      TEXT
+                started_at      TEXT,
+                archived        INTEGER
             )
         """)
-        # migrate an older db that predates the type column
+        # migrate older dbs that predate a column
         cols = {r[1] for r in c.execute("PRAGMA table_info(agents)")}
         if "type" not in cols:
             c.execute("ALTER TABLE agents ADD COLUMN type TEXT")
+        if "archived" not in cols:
+            c.execute("ALTER TABLE agents ADD COLUMN archived INTEGER")
 
 
 def register(name, agent_type=None, role=None, workspace=None, cwd=None,
@@ -87,6 +90,14 @@ def set_session(name, session_id):
                   (session_id, ts, name))
 
 
+def set_archived(name, archived):
+    """Mark an agent archived (soft-hidden from ls/selectors) or restore it."""
+    init()
+    with _conn() as c:
+        c.execute("UPDATE agents SET archived=? WHERE name=?",
+                  (1 if archived else 0, name))
+
+
 def get(name):
     init()
     with _conn() as c:
@@ -94,12 +105,15 @@ def get(name):
         return dict(row) if row else None
 
 
-def select(group=None, agent_type=None):
+def select(group=None, agent_type=None, include_archived=False):
     """Agents filtered by group and/or type; all if neither given.
 
     The one slicer behind `ls`, `up`, and `down`: a group is a set of agents, a
     type is a kind (ada, lead), and the two together are e.g. a group's ADAs.
     (`group` is the `workspace` column — `group` is a SQL reserved word.)
+
+    Archived agents are excluded unless include_archived — so `ls`, group/type
+    ops, and tab-completion all skip them by default.
     """
     init()
     where, params = [], []
@@ -109,6 +123,8 @@ def select(group=None, agent_type=None):
     if agent_type is not None:
         where.append("type=?")
         params.append(agent_type)
+    if not include_archived:
+        where.append("(archived IS NULL OR archived=0)")
     sql = "SELECT * FROM agents"
     if where:
         sql += " WHERE " + " AND ".join(where)
