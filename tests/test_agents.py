@@ -372,3 +372,48 @@ def test_rm_purge_deletes_row(env):
     a = cli.build_parser().parse_args(["rm", "pam", "--purge"])
     assert a.func(a) == 0
     assert db.get("pam") is None
+
+
+def test_attach_requires_a_target(env):
+    a = env["cli"].build_parser().parse_args(["attach"])
+    assert a.func(a) == 1  # neither a name nor -g
+
+
+def test_attach_and_detach_unsupported_on_foreground(env):
+    env["db"].register("solo")
+    p = env["cli"].build_parser()
+    a = p.parse_args(["attach", "solo", "--host", "foreground"])
+    assert a.func(a) == 1   # foreground can't attach
+    a = p.parse_args(["detach", "solo", "--host", "foreground"])
+    assert a.func(a) == 1
+
+
+def test_find_command_table_and_json(env, monkeypatch, capsys):
+    import json
+    from agents import history
+    rows = [
+        {"session_id": "sid-run", "cwd": "/a/proj", "msgs": 5,
+         "title": "Running one", "present": True},
+        {"session_id": "sid-idle", "cwd": "/b/proj", "msgs": 2,
+         "title": "Idle one", "present": True},
+    ]
+    monkeypatch.setattr(history, "find_sessions", lambda *a, **k: rows)
+    monkeypatch.setattr(env["native"], "list_sessions", lambda: [{"sessionId": "sid-run"}])
+    p = env["cli"].build_parser()
+
+    a = p.parse_args(["find"]); assert a.func(a) == 0
+    out = capsys.readouterr().out
+    assert "running" in out and "idle" in out and "Running one" in out
+
+    a = p.parse_args(["find", "--json"]); assert a.func(a) == 0
+    objs = [json.loads(l) for l in capsys.readouterr().out.splitlines() if l.strip()]
+    assert len(objs) == 2 and any(o["running"] for o in objs)
+
+
+def test_find_command_no_matches(env, monkeypatch, capsys):
+    from agents import history
+    monkeypatch.setattr(history, "find_sessions", lambda *a, **k: [])
+    monkeypatch.setattr(env["native"], "list_sessions", lambda: [])
+    a = env["cli"].build_parser().parse_args(["find"])
+    assert a.func(a) == 0
+    assert "no matching sessions" in capsys.readouterr().out
