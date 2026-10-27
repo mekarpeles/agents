@@ -44,7 +44,7 @@ def envs(tmp_path, monkeypatch):
     agents_state.mkdir()
     monkeypatch.setenv("AGENTS_STATE_DIR", str(agents_state))
     monkeypatch.setenv("CMUX_STATE_DIR", str(cmux))
-    from agents_lib import db, home, migrate
+    from agents import db, home, migrate
     importlib.reload(db)
     importlib.reload(home)
     importlib.reload(migrate)
@@ -133,7 +133,7 @@ def test_no_cmux_db_returns_empty(envs):
 
 def test_shared_session_id_warning(envs, capsys):
     import importlib
-    from agents_lib import cli
+    from agents import cli
     importlib.reload(cli)
     _make_cmux(envs["cmux"], [
         {"name": "pr-a", "cwd": "/x", "session_id": "dup"},

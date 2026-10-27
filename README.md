@@ -13,11 +13,12 @@ humans, for managing AI agents.
 2. **Find and resume past sessions** — search previous sessions and resume the
    one you want.
 3. **Human-readable nicknames** — assign a friendly name to any agent.
-4. **Groups** *(coming soon)* — gather related agents into a group and spin them
-   up together with tmux or herdr.
+4. **Groups** — gather related agents into a group and bring the whole set up
+   together with `up -g <group>` (one tmux session, a window per agent).
 5. **Persistent per-agent setup** — a durable home directory, skills, auth, and
    per-agent tooling for each agent.
-6. **Archive or remove** agents when they are no longer needed.
+6. **Remove** an agent when it's no longer needed (`rm` de-registers it; the home
+   directory is kept).
 
 ## Install
 
@@ -37,22 +38,55 @@ pipx; macOS needs [Homebrew](https://brew.sh). State lives under `~/.agents/`
 The command is `agents` (with `ag` as a shorthand alias):
 
 ```bash
-agents register pam --role "registry owner" --workspace pam --identity ./pam.md
+agents register pam -g web --role "edge" --identity ./pam.md
 agents register ada --cwd ~/Projects/ada --session-id <id>   # adopt an existing session
-agents up pam                 # launch attached to this terminal (resumes if bound)
-agents up pam --host herdr    # launch detached in a herdr pane
+agents up pam                 # start in tmux (detached); resumes if already bound
+agents up -g web              # bring up every agent in the 'web' group
+agents up ada --host foreground   # or run attached to this terminal
+agents attach pam             # attach to its tmux window (Ctrl-b d to detach)
 agents send pam "status?"     # pipe a message into the running session
 agents find pam               # search past sessions to resume or adopt
 agents ls                     # registered agents + live status
-agents list                   # alias of ls
-agents down pam               # stop the running session
+agents down pam               # stop it   (agents down -g web  stops the group)
 agents rm pam                 # de-register (home dir preserved)
-agents help                   # same as `agents --help`; bare `agents` also prints help
 ```
 
-`list`/`ls`, `search`/`find`, and `help`/`--help` are aliases, and an unknown
-command is rejected (it never becomes an agent name), so `agents list` and
-`agents up --help` can't silently register junk agents named `list` / `--help`.
+`up`, `down`, and `ls` take an agent name or the `-g <group>` / `-t <type>`
+selectors; `attach`/`detach` take a name or `-g`. Hosts: `tmux` (default),
+`herdr`, `foreground` (`--host`). Aliases: `ls`/`list`, `find`/`search`,
+`a`/`attach`, `d`/`detach`. An unknown command is rejected (it never becomes an
+agent name), so `agents list` and `agents up --help` can't register junk agents.
+
+## Agent home & types
+
+`register` creates `~/.agents/<name>/` — the agent's base, and a drop-zone you
+populate before `up`:
+
+- **`AGENTS.md`** — how the agent operates. Seeded from an **agent type**
+  (`--type ada`, `--type default`); claude starts in this dir, so Claude Code
+  loads it automatically. Replace it to give the agent your own instructions.
+- **`PROMPT.md`** — the agent's task (`--prompt "..."`, or write the file).
+- **`identity.md`** — optional extra identity (`--identity file.md`).
+
+Types are bundled in the repo under `src/agents/types/`. Claude runs in the home
+dir by default (so `AGENTS.md` loads); pass `--cwd <repo>` to run it in a project
+checkout instead.
+
+## Groups & types
+
+A **group** (`-g`) is a set of agents; a **type** (`-t`) is a kind of agent
+(`lead`, `ada`, …). `ls`, `up`, and `down` take both and intersect them — so a
+group with a `lead` and its `ada`s is managed as one unit:
+
+```bash
+agents ls -t lead                 # every lead
+agents ls -t ada                  # every ADA
+agents ls -g payments             # the whole 'payments' group
+agents ls -g payments -t ada      # that group's ADAs
+agents up -g payments             # bring the group up together (lead + ADAs)
+agents up -t lead                 # bring every lead up
+agents down -g payments           # stop the group
+```
 
 ## Finding sessions
 
@@ -70,25 +104,11 @@ dc33a929-b44e-448f-b1d5-adaa9cbd2681  idle       698  Projects     PAM agent res
 on disk, no process), or `gone` (transcript cleaned up — shown only with
 `--all`). `--json` emits one object per line; `-n` caps the count.
 
-## Roadmap
-
-The registry is one table today (agents). The vision is a small graph on top of it:
-
-- **Workspaces** — a table grouping one or more agents so you can bring a whole
-  set up together and `agents attach <workspace>` into it (tmux-backed).
-- **Roles** — a graph of edges over the agents table (`ada reports-to pam`), so
-  coordination and escalation have a durable shape, not an ad-hoc convention.
-- **Name resolution** — one resolver across the identifiers that different
-  callers need: `session_id` (durable key), the harness name the TUI uses, your
-  logical name, and the live socket/pid (resolved on demand, never stored stale).
-
-These are experimental and not built yet; the near-term focus is making the
-basics above rock-solid.
-
 ## Tests
 
 ```bash
 python3 -m pytest tests/ -q
 ```
 
-See [DESIGN.md](DESIGN.md) for the architecture.
+See [docs/architecture.md](docs/architecture.md) for how it's built, and the
+[issue tracker](https://github.com/mekarpeles/agents/issues) for what's planned.

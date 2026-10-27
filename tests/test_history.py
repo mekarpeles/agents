@@ -51,7 +51,7 @@ def test_find_lists_present_sessions_newest_first(claude):
     _transcript(projects, "/Users/x/alpha", "aaaa1111", "Alpha title", "last a", 3)
     _transcript(projects, "/Users/x/beta", "bbbb2222", "Beta title", "last b", 5)
 
-    from agents_lib import history
+    from agents import history
     rows = history.find_sessions()
     assert [r["session_id"] for r in rows] == ["bbbb2222", "aaaa1111"]  # newest first
     beta = rows[0]
@@ -69,7 +69,7 @@ def test_find_query_matches_prompts_and_title(claude):
     _transcript(projects, "/Users/x/alpha", "aaaa1111", "Alpha", "a", 1)
     _transcript(projects, "/Users/x/beta", "bbbb2222", "Beta", "b", 1)
 
-    from agents_lib import history
+    from agents import history
     assert [r["session_id"] for r in history.find_sessions("pam")] == ["bbbb2222"]
     assert history.find_sessions("nomatch") == []
 
@@ -79,7 +79,7 @@ def test_gone_transcript_excluded_unless_all(claude):
     with open(hf, "w") as f:
         _hist(f, "cccc3333", "/Users/x/gamma", "a prompt", 1000)  # no transcript
 
-    from agents_lib import history
+    from agents import history
     assert history.find_sessions() == []
     gone = history.find_sessions(include_gone=True)
     assert len(gone) == 1
@@ -93,7 +93,7 @@ def test_cache_reused_until_signature_changes(claude):
         _hist(f, "aaaa1111", "/Users/x/alpha", "work on alpha", 1000)
     _transcript(projects, "/Users/x/alpha", "aaaa1111", "First", "a", 1)
 
-    from agents_lib import history
+    from agents import history
     assert history.find_sessions()[0]["title"] == "First"
 
     # rewrite transcript (changes mtime:size) -> re-parsed

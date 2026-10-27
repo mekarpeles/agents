@@ -33,6 +33,7 @@ def init():
         c.execute("""
             CREATE TABLE IF NOT EXISTS agents (
                 name            TEXT PRIMARY KEY,
+                type            TEXT,
                 role            TEXT,
                 workspace       TEXT,
                 cwd             TEXT,
@@ -43,32 +44,38 @@ def init():
                 started_at      TEXT
             )
         """)
+        # migrate an older db that predates the type column
+        cols = {r[1] for r in c.execute("PRAGMA table_info(agents)")}
+        if "type" not in cols:
+            c.execute("ALTER TABLE agents ADD COLUMN type TEXT")
 
 
-def register(name, role=None, workspace=None, cwd=None, initial_prompt=None,
-             identity_path=None, session_id=None):
+def register(name, agent_type=None, role=None, workspace=None, cwd=None,
+             initial_prompt=None, identity_path=None, session_id=None):
     """Register or update an agent (upsert on name). Does not launch anything.
 
-    session_id, when given, binds the agent to an existing Claude session (adopt
-    a session agents did not start) — the registry equivalent of `--resume`.
+    agent_type (ada, lead, …) is the queryable kind of agent; workspace is the
+    group column. session_id, when given, binds the agent to an existing Claude
+    session (adopt one agents did not start) — the registry equivalent of --resume.
     """
     init()
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     with _conn() as c:
         c.execute("""
             INSERT INTO agents
-                (name, role, workspace, cwd, initial_prompt, identity_path,
+                (name, type, role, workspace, cwd, initial_prompt, identity_path,
                  session_id, registered_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
+                type=coalesce(excluded.type, agents.type),
                 role=coalesce(excluded.role, agents.role),
                 workspace=coalesce(excluded.workspace, agents.workspace),
                 cwd=coalesce(excluded.cwd, agents.cwd),
                 initial_prompt=coalesce(excluded.initial_prompt, agents.initial_prompt),
                 identity_path=coalesce(excluded.identity_path, agents.identity_path),
                 session_id=coalesce(excluded.session_id, agents.session_id)
-        """, (name, role, workspace, cwd, initial_prompt, identity_path,
-              session_id, ts))
+        """, (name, agent_type, role, workspace, cwd, initial_prompt,
+              identity_path, session_id, ts))
 
 
 def set_session(name, session_id):
@@ -87,17 +94,39 @@ def get(name):
         return dict(row) if row else None
 
 
-def all_agents():
+def select(group=None, agent_type=None):
+    """Agents filtered by group and/or type; all if neither given.
+
+    The one slicer behind `ls`, `up`, and `down`: a group is a set of agents, a
+    type is a kind (ada, lead), and the two together are e.g. a group's ADAs.
+    (`group` is the `workspace` column — `group` is a SQL reserved word.)
+    """
     init()
+    where, params = [], []
+    if group is not None:
+        where.append("workspace=?")
+        params.append(group)
+    if agent_type is not None:
+        where.append("type=?")
+        params.append(agent_type)
+    sql = "SELECT * FROM agents"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY workspace IS NULL, workspace, type, name"
     with _conn() as c:
-        rows = c.execute(
-            "SELECT * FROM agents ORDER BY workspace IS NULL, workspace, name"
-        ).fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r) for r in c.execute(sql, params).fetchall()]
+
+
+def all_agents():
+    return select()
+
+
+def in_workspace(ws):
+    return select(group=ws)
 
 
 def remove(name):
-    """De-register (home dir is preserved on disk, like cmux rm)."""
+    """De-register (home dir is preserved on disk)."""
     init()
     with _conn() as c:
         c.execute("DELETE FROM agents WHERE name=?", (name,))

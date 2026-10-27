@@ -1,25 +1,10 @@
 # Migrating from cmux to agents
 
-## Why nothing breaks the moment claudio v2 lands
-
-cmux depends on claudio's **old** API (`claudio.run`, the socket inbox, pairing).
-claudio v2 removes all of that, so installing v2 *where cmux can import it* breaks
-cmux. The migration avoids that by keeping the two on separate claudio lines:
-
-| | installs claudio from | pipx venv |
-|---|---|---|
-| **cmux** | `claudio.git` (**main**) | the existing shared `cmux` venv |
-| **agents** | `claudio.git@**v2**` | its own `agents` venv |
-
-Consequences:
-
-- **PR #12 merges into `v2`, not `main`.** cmux installs claudio `main`, so the
-  merge does **not** touch the running fleet. cmux keeps working.
-- cmux breaks only if you (a) merge `v2` → `main`, or (b) force-reinstall claudio
-  v2 into cmux's shared venv. **Do neither until the fleet has migrated.**
-- `agents` and `cmux` run side by side during the transition. Run any given agent
-  under **one** of them at a time (never both — two processes resuming the same
-  session is the hazard).
+`agents` has no runtime dependency on cmux or claudio — it vendors native
+messaging directly, in its own venv. So it can read cmux's state and mirror it
+into `~/.agents` while cmux keeps running, and you move the fleet over by
+attrition. Run any given agent under **one** of them at a time (never both — two
+processes resuming the same session is the hazard).
 
 ## The migration command
 
@@ -66,4 +51,4 @@ keep that binding, and clear the others (`agents` won't guess which is right).
    confirm `agents send` reaches it. Take it `down` in cmux first.
 4. Roll through the fleet by attrition. cmux stays installed until the last agent
    moves.
-5. Only then retire cmux and (optionally) merge claudio `v2` → `main`.
+5. Only then retire cmux.

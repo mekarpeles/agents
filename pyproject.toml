@@ -5,18 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agents"
 version = "0.1.0"
-description = "Register and run named Claude Code agents without tmux or a daemon (native messaging via claudio)."
+description = "Register and run named Claude Code agents with native socket messaging, no daemon."
 requires-python = ">=3.9"
-# agents installs from claudio v2 — the native-messaging baseline (its effective
-# main for this toolchain).
-dependencies = [
-    "claudio @ git+https://github.com/mekarpeles/claudio.git@v2",
-]
+dependencies = []
 
 [project.scripts]
-ag = "agents_lib.cli:main"
-agents = "agents_lib.cli:main"
-claudio = "claudio.cli:main"
+ag = "agents.cli:main"
+agents = "agents.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["agents_lib*"]
+where = ["src"]
+include = ["agents*"]
+
+[tool.setuptools.package-data]
+agents = ["types/*/AGENTS.md"]

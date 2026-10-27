@@ -23,7 +23,7 @@ import os
 import shutil
 import sqlite3
 
-from agents_lib import db, home
+from agents import db, home
 
 CMUX_STATE_DIR = os.environ.get("CMUX_STATE_DIR", os.path.expanduser("~/.cmux"))
 

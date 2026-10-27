@@ -22,13 +22,13 @@ def env(tmp_path, monkeypatch):
         d.mkdir()
     monkeypatch.setenv("AGENTS_STATE_DIR", str(state))
 
-    from agents_lib import db, home, session
-    from claudio import native
+    from agents import db, home, session
+    from agents import transport as native
     importlib.reload(db)
     importlib.reload(home)
     monkeypatch.setattr(session, "SESSIONS_DIR", str(sessions))
     monkeypatch.setattr(native, "SESSIONS_DIR", str(sessions))
-    from agents_lib import cli
+    from agents import cli
     importlib.reload(cli)
     return {"state": str(state), "sessions": str(sessions), "socks": str(socks),
             "db": db, "home": home, "session": session, "native": native, "cli": cli}
@@ -43,14 +43,29 @@ def test_register_creates_home_and_row(env):
     assert env["home"].agent_cwd("pam") == "/tmp/x"
 
 
-def test_home_layout_matches_cmux(env, tmp_path):
-    env["home"].ensure_home("ada", cwd=str(tmp_path),
-                            initial_prompt="be ada")
+def test_home_layout(env, tmp_path):
+    env["home"].ensure_home("ada", cwd=str(tmp_path), initial_prompt="be ada")
     h = env["home"].home_dir("ada")
-    assert os.path.exists(os.path.join(h, "initial-prompt.md"))
+    assert os.path.exists(os.path.join(h, "PROMPT.md"))     # the task
+    assert os.path.exists(os.path.join(h, "AGENTS.md"))     # seeded from a type
     assert os.path.exists(os.path.join(h, "cwd"))
+    assert env["home"].initial_prompt("ada") == "be ada"
     env["home"].write_session_id("ada", "sid-xyz")
     assert env["home"].read_session_id("ada") == "sid-xyz"
+
+
+def test_default_cwd_is_home(env):
+    env["home"].ensure_home("solo")   # no --cwd -> runs in its own home dir
+    assert env["home"].agent_cwd("solo") == env["home"].home_dir("solo")
+
+
+def test_type_seeds_agents_md(env):
+    env["home"].ensure_home("dev", agent_type="ada")
+    text = open(os.path.join(env["home"].home_dir("dev"), "AGENTS.md")).read()
+    assert "Atomic Development Agent" in text          # the ada doctrine
+    env["home"].ensure_home("gen", agent_type="default")
+    assert "named agent" in open(
+        os.path.join(env["home"].home_dir("gen"), "AGENTS.md")).read()
 
 
 def test_cwd_recorded_once_and_reused(env):
@@ -112,7 +127,7 @@ def test_send_resolves_via_db_session(env):
 def test_register_with_session_id(env):
     # --session-id binds in the DB and writes last-session-id for `up` to resume.
     rc = env["cli"].cmd_register(type("A", (), {
-        "name": "ada", "role": "lead", "workspace": "ol-leads",
+        "name": "ada", "type": "default", "role": "lead", "workspace": "ol-leads",
         "cwd": "/Users/mek/Projects/ada", "identity": None, "prompt": None,
         "session_id": "5662a36c-05c3-44cd-9916-a1e9aaa50b3b"})())
     assert rc == 0
@@ -137,13 +152,13 @@ def test_up_detects_already_running(env):
     env["db"].set_session("ada", "live-sid")
     env["home"].ensure_home("ada", cwd="/tmp", session_id="live-sid")
     rc = env["cli"].cmd_up(type("A", (), {
-        "name": "ada", "host": "foreground", "prompt": None,
+        "name": "ada", "group": None, "host": "foreground", "prompt": None,
         "cwd": None, "identity": None, "no_inject": False})())
     assert rc == 1  # refused because already running (no launch attempted)
 
 
 def test_list_aliases_ls():
-    from agents_lib import cli
+    from agents import cli
     args = cli.build_parser().parse_args(["list"])
     assert args.func is cli.cmd_ls
     args = cli.build_parser().parse_args(["ls"])
@@ -151,7 +166,7 @@ def test_list_aliases_ls():
 
 
 def test_help_subcommand():
-    from agents_lib import cli
+    from agents import cli
     args = cli.build_parser().parse_args(["help"])
     assert args.func is cli.cmd_help
 
@@ -159,24 +174,24 @@ def test_help_subcommand():
 def test_unknown_command_errors_not_agent():
     # cmux's footgun: an unknown token became an agent name. argparse must
     # reject it instead.
-    from agents_lib import cli
+    from agents import cli
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["frobnicate"])
 
 
 def test_no_command_is_not_required():
-    from agents_lib import cli
+    from agents import cli
     args = cli.build_parser().parse_args([])
     assert getattr(args, "cmd", None) is None  # main() prints help, exits 0
 
 
 def test_sender_resolution(env, monkeypatch):
     import getpass
-    monkeypatch.delenv("CLAUDIO_AGENT_NAME", raising=False)
+    monkeypatch.delenv("AGENTS_AGENT_NAME", raising=False)
     assert env["cli"]._sender("mek") == "mek"             # explicit --from wins
-    monkeypatch.setenv("CLAUDIO_AGENT_NAME", "ada")
+    monkeypatch.setenv("AGENTS_AGENT_NAME", "ada")
     assert env["cli"]._sender(None) == "ada"              # then env
-    monkeypatch.delenv("CLAUDIO_AGENT_NAME", raising=False)
+    monkeypatch.delenv("AGENTS_AGENT_NAME", raising=False)
     assert env["cli"]._sender(None) == getpass.getuser()  # never the bare "agents"
 
 
@@ -194,6 +209,78 @@ def test_send_from_flag_sets_attribution(env):
         assert srv.lines[1]["from"] == "mek"
     finally:
         srv.close()
+
+
+class _StubHost:
+    name = "stub"
+    group = True
+
+    def __init__(self):
+        self.started = []
+
+    def start(self, agent, cmd, cwd, env, group=None):
+        from agents import hosts
+        self.started.append((agent, group))
+        return hosts.Launched(pid=None, proc=None)  # detached, no binding
+
+
+def test_up_group_fans_out(env, monkeypatch):
+    env["db"].register("a1", workspace="team")
+    env["db"].register("a2", workspace="team")
+    env["db"].register("solo", workspace="other")
+    stub = _StubHost()
+    monkeypatch.setattr(env["cli"].hosts, "get", lambda _n: stub)
+    rc = env["cli"].cmd_up(type("A", (), {
+        "name": None, "group": "team", "host": "tmux", "prompt": None,
+        "cwd": None, "identity": None, "no_inject": True})())
+    assert rc == 0
+    assert sorted(a for a, _ in stub.started) == ["a1", "a2"]      # not 'solo'
+    assert all(g == "team" for _, g in stub.started)               # grouped session
+
+
+def test_type_stored_and_queryable(env):
+    db = env["db"]
+    db.register("pam", agent_type="lead", workspace="payments")
+    db.register("ada-a", agent_type="ada", workspace="payments")
+    db.register("ada-b", agent_type="ada", workspace="payments")
+    db.register("solo", agent_type="ada", workspace="other")
+    assert [a["name"] for a in db.select(agent_type="lead")] == ["pam"]
+    assert sorted(a["name"] for a in db.select(agent_type="ada")) == \
+        ["ada-a", "ada-b", "solo"]
+    # a team's ADAs = group + type intersection
+    assert sorted(a["name"] for a in db.select(group="payments", agent_type="ada")) \
+        == ["ada-a", "ada-b"]
+
+
+def test_up_by_type_fans_out(env, monkeypatch):
+    env["db"].register("l1", agent_type="lead")
+    env["db"].register("l2", agent_type="lead")
+    env["db"].register("a1", agent_type="ada")
+    stub = _StubHost()
+    monkeypatch.setattr(env["cli"].hosts, "get", lambda _n: stub)
+    rc = env["cli"].cmd_up(type("A", (), {
+        "name": None, "group": None, "type": "lead", "host": "tmux",
+        "prompt": None, "cwd": None, "identity": None, "no_inject": True})())
+    assert rc == 0
+    assert sorted(a for a, _ in stub.started) == ["l1", "l2"]   # not 'a1'
+
+
+def test_up_requires_name_or_group(env):
+    rc = env["cli"].cmd_up(type("A", (), {
+        "name": None, "group": None, "host": "tmux", "prompt": None,
+        "cwd": None, "identity": None, "no_inject": True})())
+    assert rc == 1  # neither target given
+
+
+def test_down_group_fans_out(env):
+    env["db"].register("d1", workspace="grp")
+    env["db"].register("d2", workspace="grp")
+    env["home"].ensure_home("d1")
+    env["home"].ensure_home("d2")
+    # No bound sessions -> each _down_one reports "no bound session" (rc 1), but
+    # the dispatch must visit both without raising.
+    rc = env["cli"].cmd_down(type("A", (), {"name": None, "group": "grp"})())
+    assert rc == 1
 
 
 def test_rm_keeps_home(env):
