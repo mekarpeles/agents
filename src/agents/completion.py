@@ -18,7 +18,7 @@ _agents() {
   local cmd prev
   if (( CURRENT == 2 )); then
     compadd -- register up down attach detach send list find whoami rm migrate \
-               configure completion help
+               upgrade configure completion help
     return
   fi
   cmd=$words[2]
@@ -41,7 +41,7 @@ BASH = r"""_agents() {
   prev="${COMP_WORDS[COMP_CWORD-1]}"
   cmd="${COMP_WORDS[1]}"
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "register up down attach detach send list find whoami rm migrate configure completion help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "register up down attach detach send list find whoami rm migrate upgrade configure completion help" -- "$cur") )
     return
   fi
   case "$prev" in

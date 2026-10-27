@@ -39,6 +39,9 @@ non-interactive/agent install skips that — force it with `--configure`, or ski
 with `--no-configure`. State lives under `~/.agents/` (override with
 `AGENTS_STATE_DIR`).
 
+Once installed, **`agents upgrade`** updates the CLI in place (clone + `pipx`
+reinstall); `agents upgrade --testing <branch>` installs a branch instead of main.
+
 ## Usage
 
 The command is `agents` (`agents configure` can add a short `ag` alias, if that
@@ -58,6 +61,7 @@ agents ls                     # registered agents + status light (● up/down)
 agents down pam               # stop it   (agents down --group web  stops the group)
 agents rm pam                 # remove (archive): hidden from ls, kept (ls -a shows it)
 agents configure              # permission mode, default host, tmux, tab-completion
+agents upgrade                # update the agents CLI itself (from GitHub)
 ```
 
 Launched agents run in a configurable **permission mode** — the default,

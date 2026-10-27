@@ -417,3 +417,41 @@ def test_find_command_no_matches(env, monkeypatch, capsys):
     a = env["cli"].build_parser().parse_args(["find"])
     assert a.func(a) == 0
     assert "no matching sessions" in capsys.readouterr().out
+
+
+def test_upgrade_clone_and_pipx(monkeypatch):
+    from agents import cli
+    calls = []
+    class R:
+        def __init__(self): self.returncode = 0; self.stderr = ""
+    monkeypatch.setattr("tempfile.mkdtemp", lambda: "/tmp/agents-up-test")
+    monkeypatch.setattr(cli.subprocess, "run", lambda cmd, **k: calls.append(cmd) or R())
+    monkeypatch.setattr(cli.shutil, "rmtree", lambda *a, **k: None)
+    a = cli.build_parser().parse_args(["upgrade"])
+    assert a.func(a) == 0
+    clone = next(c for c in calls if c[:2] == ["git", "clone"])
+    assert "--branch" not in clone  # plain upgrade = main
+    assert any(c[0] == "pipx" and "install" in c and "--force" in c for c in calls)
+
+
+def test_upgrade_testing_branch(monkeypatch):
+    from agents import cli
+    calls = []
+    class R:
+        def __init__(self): self.returncode = 0; self.stderr = ""
+    monkeypatch.setattr("tempfile.mkdtemp", lambda: "/tmp/agents-up-test2")
+    monkeypatch.setattr(cli.subprocess, "run", lambda cmd, **k: calls.append(cmd) or R())
+    monkeypatch.setattr(cli.shutil, "rmtree", lambda *a, **k: None)
+    a = cli.build_parser().parse_args(["upgrade", "--testing", "fix-1"])
+    assert a.func(a) == 0
+    clone = next(c for c in calls if c[:2] == ["git", "clone"])
+    assert "--branch" in clone and "fix-1" in clone
+
+
+def test_invalid_command_prints_help_not_choices(capsys):
+    from agents import cli
+    with pytest.raises(SystemExit) as e:
+        cli.build_parser().parse_args(["upgradex"])
+    assert e.value.code == 2
+    err = capsys.readouterr().err
+    assert "usage: agents" in err and "_complete" not in err

@@ -465,6 +465,43 @@ def cmd_migrate(args):
     return 0
 
 
+def cmd_upgrade(args):
+    """Upgrade the agents CLI from GitHub (clone + pipx reinstall).
+
+    Simpler than cmux's upgrade: there's no dependency to re-inject because
+    claudio is vendored. `--testing [branch]` installs a branch instead of main,
+    so a fix can be validated on one machine without changing what a plain
+    `agents upgrade` installs anywhere else.
+    """
+    import tempfile
+    tmp = tempfile.mkdtemp()
+    clone = ["git", "clone", "--depth=1"]
+    if args.branch:
+        clone += ["--branch", args.branch]
+    clone += ["https://github.com/mekarpeles/agents.git", os.path.join(tmp, "agents")]
+    print(f"agents: cloning {f'branch {args.branch!r}' if args.branch else 'latest'}…")
+    r = subprocess.run(clone, capture_output=True, text=True)
+    if r.returncode != 0:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return _err(f"clone failed — {r.stderr.strip()}")
+    if args.branch:
+        print(f"agents: ⚠ installing from {args.branch!r}, not the stable release — "
+              f"run `agents upgrade` (no flags) to return to main.")
+    print("agents: upgrading via pipx…")
+    # uv-backed pipx refuses to overwrite an existing venv without UV_VENV_CLEAR,
+    # and may serve a stale cached build without UV_NO_CACHE.
+    env = dict(os.environ, UV_VENV_CLEAR="1", UV_NO_CACHE="1")
+    r2 = subprocess.run(["pipx", "install", "--force", os.path.join(tmp, "agents")],
+                        env=env)
+    shutil.rmtree(tmp, ignore_errors=True)
+    if r2.returncode != 0:
+        return _err("upgrade failed. If pipx uses uv, run:\n"
+                    "  UV_VENV_CLEAR=1 UV_NO_CACHE=1 pipx install --force "
+                    "git+https://github.com/mekarpeles/agents.git")
+    print("agents: upgraded.")
+    return 0
+
+
 def _read_line(prompt):
     """Show `prompt` and read one line, or None if there's no way to ask.
 
@@ -689,14 +726,26 @@ def cmd_help(args):
     return 0
 
 
+class _Parser(argparse.ArgumentParser):
+    """Top-level parser that prints full help on an unknown command instead of a
+    terse 'invalid choice' line (which also leaked `_complete` and every alias)."""
+
+    def error(self, message):
+        self.print_help(sys.stderr)
+        sys.exit(2)
+
+
 def build_parser():
-    p = argparse.ArgumentParser(prog="agents", description=__doc__.splitlines()[0])
+    p = _Parser(prog="agents", description=__doc__.splitlines()[0])
     # Shorthand so `agents --configure` works like the `configure` subcommand.
     p.add_argument("--configure", action="store_true",
                    help="run interactive configuration (same as `agents configure`)")
     # Not required: a bare `agents` prints help instead of an argparse error.
     # metavar collapses the usage brace-list (and hides the internal `_complete`).
-    sub = p.add_subparsers(dest="cmd", metavar="<command>")
+    # parser_class keeps subcommands on the default parser, so a missing-arg error
+    # inside a subcommand still prints that subcommand's terse error, not full help.
+    sub = p.add_subparsers(dest="cmd", metavar="<command>",
+                           parser_class=argparse.ArgumentParser)
 
     s = sub.add_parser("register", help="register an agent (does not launch)")
     s.add_argument("name")
@@ -792,6 +841,12 @@ def build_parser():
     s.add_argument("--link", action="store_true",
                    help="symlink homes instead of copying")
     s.set_defaults(func=cmd_migrate)
+
+    s = sub.add_parser("upgrade", help="upgrade the agents CLI from GitHub")
+    s.add_argument("--testing", nargs="?", const="testing", default=None,
+                   dest="branch", metavar="BRANCH",
+                   help="install from a branch (default: 'testing') instead of main")
+    s.set_defaults(func=cmd_upgrade)
 
     s = sub.add_parser("configure",
                        help="set defaults (permission mode, host); install tmux")
