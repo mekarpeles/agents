@@ -84,3 +84,15 @@ def test_configure_noninteractive_writes_file(env):
     assert args.func(args) == 0
     assert config.load() == {"permission_mode": "bypassPermissions",
                              "host": "foreground"}
+
+
+def test_configure_flag_shorthand_parses(env):
+    from agents import cli
+    args = cli.build_parser().parse_args(["--configure"])
+    assert args.configure is True and getattr(args, "cmd", None) is None
+
+
+def test_list_and_ls_both_route_to_cmd_ls(env):
+    from agents import cli
+    for name in ("list", "ls"):
+        assert cli.build_parser().parse_args([name]).func is cli.cmd_ls

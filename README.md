@@ -67,9 +67,9 @@ install tmux; `--mode bypassPermissions` is the explicit, un-gated opt-in.
 `up` and `down` take an agent name or the `--group <group>` / `--type <type>`
 selectors (short: `-g` / `-t`); `ls` filters by `--group`/`--type` and by status
 (`--running` / `--down`); `attach`/`detach` take a name or `--group`. Hosts:
-`tmux` (default), `herdr`, `foreground` (`--host`). Aliases: `ls`/`list`,
-`a`/`attach`, `d`/`detach`. An unknown command is rejected (it never becomes an
-agent name), so `agents list` and `agents up --help` can't register junk agents.
+`tmux` (default), `herdr`, `foreground` (`--host`). Short aliases: `list` (`ls`),
+`attach` (`a`), `detach` (`d`). An unknown command is rejected (it never becomes
+an agent name), so `agents list` and `agents up --help` can't register junk agents.
 
 ## Agent home & types
 

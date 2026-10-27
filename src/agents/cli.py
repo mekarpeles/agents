@@ -596,6 +596,9 @@ def cmd_help(args):
 
 def build_parser():
     p = argparse.ArgumentParser(prog="agents", description=__doc__.splitlines()[0])
+    # Shorthand so `agents --configure` works like the `configure` subcommand.
+    p.add_argument("--configure", action="store_true",
+                   help="run interactive configuration (same as `agents configure`)")
     # Not required: a bare `agents` prints help instead of an argparse error.
     # metavar collapses the usage brace-list (and hides the internal `_complete`).
     sub = p.add_subparsers(dest="cmd", metavar="<command>")
@@ -647,7 +650,7 @@ def build_parser():
                    help="pty host (default: the configured host, tmux)")
     s.set_defaults(func=cmd_detach)
 
-    s = sub.add_parser("ls", aliases=["list"],
+    s = sub.add_parser("list", aliases=["ls"],
                        help="list agents (filter by group/type/status)")
     s.add_argument("-g", "--group", help="only agents in this group")
     s.add_argument("-t", "--type", help="only agents of this type (e.g. lead, ada)")
@@ -719,6 +722,9 @@ def build_parser():
 def main():
     parser = build_parser()
     args = parser.parse_args()
+    if getattr(args, "configure", False) and not getattr(args, "cmd", None):
+        sys.exit(cmd_configure(argparse.Namespace(
+            mode=None, host=None, no_input=False, no_reload=False)))
     if not getattr(args, "cmd", None):
         parser.print_help()
         sys.exit(0)
