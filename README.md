@@ -60,7 +60,7 @@ agents up ada --host foreground   # or run attached to this terminal
 agents attach pam             # attach to its tmux window (Ctrl-b d to detach)
 agents attach --team agents-lead  # attach to the team's shared session
 agents send pam "status?"     # message a registered agent
-agents send -s <session> "hi" # …or any live session by id (no registry needed)
+agents send -s <session> "hi" # …or any live session by id or prefix (no registry)
 agents group add pam infra    # add/remove group labels (pam may be in many)
 agents team add ada1 agents-lead   # set (or `team rm ada1` to clear) its team
 agents rename ada1 ada-solr   # rename (home, reports & transcript follow; -f if live)

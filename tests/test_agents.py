@@ -827,6 +827,53 @@ def test_send_requires_a_target(env):
     assert a.func(a) == 1
 
 
+def test_resolve_session_id_prefix_full_name_pid_ambiguity(env, monkeypatch):
+    cli, native = env["cli"], env["native"]
+    recs = [{"sessionId": "48ba4ae5-aaaa-1111", "name": "foo-1", "pid": 11},
+            {"sessionId": "48ba4ae5-bbbb-2222", "name": "foo-2", "pid": 22},
+            {"sessionId": "9c0d0e0f-cccc-3333", "name": "bar-3", "pid": 33}]
+    monkeypatch.setattr(native, "list_sessions", lambda *a, **k: recs)
+    # unique id prefix -> full id
+    assert cli._resolve_session_id("9c0d0e")[0] == "9c0d0e0f-cccc-3333"
+    # full id -> itself
+    assert cli._resolve_session_id("48ba4ae5-aaaa-1111")[0] == "48ba4ae5-aaaa-1111"
+    # exact live name / pid
+    assert cli._resolve_session_id("foo-2")[0] == "48ba4ae5-bbbb-2222"
+    assert cli._resolve_session_id("33")[0] == "9c0d0e0f-cccc-3333"
+    # ambiguous prefix -> err, no sid
+    sid, _, err = cli._resolve_session_id("48ba4ae5")
+    assert sid is None and "matches 2 live sessions" in err
+    # nothing live matches -> pass through unchanged (transport resolves/fails)
+    assert cli._resolve_session_id("deadbeef-0000")[0] == "deadbeef-0000"
+
+
+def test_send_dash_s_accepts_ls_prefix(env, monkeypatch, capsys):
+    """`send -s <8-char prefix>` (exactly what ls prints) resolves to the full id
+    and delivers — the gap that used to need the full sessionId."""
+    cli, native = env["cli"], env["native"]
+    monkeypatch.setattr(native, "list_sessions",
+                        lambda *a, **k: [{"sessionId": "48ba4ae5-84da-4c6d", "name": "x-1"}])
+    sent = {}
+    monkeypatch.setattr(native, "send",
+                        lambda sid, msg, sender=None: sent.update(sid=sid, msg=msg))
+    a = cli.build_parser().parse_args(["send", "-s", "48ba4ae5", "ping"])
+    assert a.func(a) == 0
+    assert sent["sid"] == "48ba4ae5-84da-4c6d"      # expanded to the full id
+    assert sent["msg"] == "ping"
+
+
+def test_send_dash_s_ambiguous_prefix_refuses(env, monkeypatch):
+    cli, native = env["cli"], env["native"]
+    monkeypatch.setattr(native, "list_sessions", lambda *a, **k: [
+        {"sessionId": "48ba4ae5-aaaa", "name": "a"},
+        {"sessionId": "48ba4ae5-bbbb", "name": "b"}])
+    sent = {}
+    monkeypatch.setattr(native, "send", lambda *a, **k: sent.update(called=True))
+    a = cli.build_parser().parse_args(["send", "-s", "48ba4ae5", "hi"])
+    assert a.func(a) == 1                 # refused as ambiguous
+    assert not sent                       # nothing delivered
+
+
 def test_resolve_target_registered_and_live(env, monkeypatch):
     cli = env["cli"]
     monkeypatch.setattr(env["native"], "list_sessions",

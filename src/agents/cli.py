@@ -403,6 +403,31 @@ def _resolve_target(target):
     return None, target
 
 
+def _resolve_session_id(value):
+    """Resolve a bare session identifier (for `send -s`) to a full sessionId:
+    (sid, label, err). Accepts a full sessionId, a unique id prefix, an exact live
+    name, or a pid — matched against live sessions, so the same values `ls` prints
+    (an 8-char prefix) work here too. A prefix matching more than one live session
+    returns an err (ambiguous). When nothing live matches, the value is passed
+    through unchanged so the transport does the authoritative resolve (and raises
+    its own SessionNotFound if it is truly gone)."""
+    pref = []
+    for rec in native.list_sessions():
+        s = rec.get("sessionId") or ""
+        if value == s or value == rec.get("name") or value == str(rec.get("pid")):
+            return s, s[:8], None
+        if len(value) >= 4 and s.startswith(value):
+            pref.append(s)
+    uniq = list(dict.fromkeys(pref))
+    if len(uniq) > 1:
+        return None, None, (
+            f"'{value}' matches {len(uniq)} live sessions "
+            f"({', '.join(x[:8] for x in uniq)}) — use more characters")
+    if uniq:
+        return uniq[0], uniq[0][:8], None
+    return value, value[:8], None
+
+
 def _down_one(name):
     """Stop one agent or live session: SIGTERM the pid resolved from its sessionId.
 
@@ -740,7 +765,9 @@ def _sender(explicit):
 def cmd_send(args):
     parts = args.message
     if args.session:  # target a live session id directly; the name slot is message
-        sid, target = args.session, args.session[:8]
+        sid, target, err = _resolve_session_id(args.session)
+        if err:
+            return _err(err)
         parts = ([args.name] if args.name else []) + args.message
     elif args.name:
         sid, target = _resolve_target(args.name)
