@@ -60,6 +60,16 @@ def init():
             c.execute("ALTER TABLE agents ADD COLUMN archived INTEGER")
         if "team" not in cols:
             c.execute("ALTER TABLE agents ADD COLUMN team TEXT")
+        # Tombstones for *unregistered* Claude sessions the user wants hidden from
+        # find/ls. Keyed by sessionId (not a name) because these sessions have no
+        # agent row — the "everything is a session" dual of the archived flag.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS ignored_sessions (
+                session_id   TEXT PRIMARY KEY,
+                reason       TEXT,
+                archived_at  TEXT
+            )
+        """)
 
 
 def _groups_csv(groups):
@@ -253,3 +263,34 @@ def remove(name):
     init()
     with _conn() as c:
         c.execute("DELETE FROM agents WHERE name=?", (name,))
+
+
+def ignore_session(session_id, reason=None):
+    """Tombstone an unregistered session so find/ls hide it. Reversible with
+    unignore_session; idempotent (a repeat keeps the first reason unless a new one
+    is given)."""
+    init()
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    with _conn() as c:
+        c.execute("""
+            INSERT INTO ignored_sessions (session_id, reason, archived_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                reason=coalesce(excluded.reason, ignored_sessions.reason)
+        """, (session_id, reason, ts))
+
+
+def unignore_session(session_id):
+    """Lift a session tombstone (un-archive). Returns True if one was present."""
+    init()
+    with _conn() as c:
+        cur = c.execute("DELETE FROM ignored_sessions WHERE session_id=?",
+                        (session_id,))
+        return cur.rowcount > 0
+
+
+def ignored_sessions():
+    """The set of tombstoned (archived) sessionIds."""
+    init()
+    with _conn() as c:
+        return {r[0] for r in c.execute("SELECT session_id FROM ignored_sessions")}

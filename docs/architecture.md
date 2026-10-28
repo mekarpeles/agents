@@ -67,9 +67,15 @@ rather than spawning a fresh agent.
   `-g`), the one way to target a set of agents. The selectors intersect.
 - **Session binding** — the `sessionId`, which makes resume correct *and* lets a
   session identify itself (`whoami`).
-- **Archive** — `rm` sets the `archived` flag (soft-hide) rather than deleting;
-  `select` skips archived rows, so `ls`/selectors/completion ignore them until
-  `-a`. `rm --purge` deletes the row.
+- **Archive** — `rm` soft-hides rather than deleting. For a registered agent it
+  sets the `archived` flag (`select` skips archived rows, so `ls`/selectors/
+  completion ignore them until `-a`); `rm --purge` deletes the row. For an
+  *unregistered* session (any id/prefix `find` lists) it writes a tombstone to the
+  `ignored_sessions` table — keyed by sessionId, the "everything is a session" dual
+  of the flag — so `find`/`ls` hide it until `--archived`; `--restore` lifts it,
+  adopting it (`up`) lifts it, and `rm --purge` also deletes its transcript (making
+  it non-resumable). Claude exposes no per-session delete (only project-wide
+  `claude purge`), and never prunes `history.jsonl`, so the tombstone is ours.
 
 ## Binding by sessionId (not cwd-recency)
 
@@ -123,7 +129,7 @@ the pid resolved from the sessionId, and the window/pane closes when claude exit
 | **Query** | `ls` (registry), `find` (sessions), `whoami` (this session) | — |
 | **Provision** | `register`, `migrate`, `configure` | home, type, tooling, config |
 | **Organize** | `group` (add/rm labels), `team` (set/clear lead), `rename` | the registry row |
-| **Manage** | `rm` (archive; `--purge` deletes) | the registry row |
+| **Manage** | `rm` (archive agent *or* session; `--restore` lifts; `--purge` deletes) | a registry row or a session tombstone |
 | **Communicate** | `send` | a running agent's socket |
 | **Operate** | `up`, `down`, `attach`, `detach` | the live process |
 
@@ -133,7 +139,10 @@ anything `up` is visible and addressable (`send -s <id>`). It prints aligned
 `NAME SESSION STATUS TYPE GROUPS DESC` columns with a colored status light, and
 `ls -t` nests reports under their lead as a tree. `find` searches every Claude
 session on the machine (live or not) so you can adopt one (`register
---session-id`). `up` and `down` take the `name | --team | --group | --type`
+--session-id`); by default it matches session *metadata* (title, cwd, the prompts
+you typed) off the cached index, `-a` makes it a *deep* search that greps full
+transcript bodies, and `--archived` reveals sessions you tombstoned with `rm`.
+`up` and `down` take the `name | --team | --group | --type`
 selector; `ls` filters by `--group`/`--type`/`-t <team>` and by status
 (`--running`/`--down`/`--archived`, archived hidden unless `-a`; those filters also
 drop the unregistered sessions).

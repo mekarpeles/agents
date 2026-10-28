@@ -816,6 +816,64 @@ def test_find_deep_searches_transcript_body(env, tmp_path, capsys):
     assert sid in capsys.readouterr().out
 
 
+def test_ignore_session_roundtrip(env):
+    db = env["db"]
+    assert db.ignored_sessions() == set()
+    db.ignore_session("s1", reason="noise")
+    db.ignore_session("s1")                       # idempotent, keeps reason
+    assert "s1" in db.ignored_sessions()
+    assert db.unignore_session("s1") is True
+    assert db.unignore_session("s1") is False     # already gone
+    assert db.ignored_sessions() == set()
+
+
+def test_rm_archives_restores_and_purges_session(env, tmp_path, capsys):
+    """rm on a bare session id/prefix tombstones it (hidden from find, shown with
+    --archived), --restore lifts it, --purge deletes the transcript."""
+    import json
+    from agents import history
+    db = env["db"]
+
+    cwd, sid = "/home/mek/Projects/beta", "5d14bfa6-aaaa-bbbb-cccc-000000000001"
+    with open(tmp_path / "history.jsonl", "w") as fh:
+        fh.write(json.dumps({"sessionId": sid, "project": cwd,
+                             "timestamp": 1_700_000_000_000, "display": "beta work"}) + "\n")
+    path = history.transcript_path(cwd, sid)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        fh.write(json.dumps({"type": "user", "message": {"content": "beta work"}}) + "\n")
+
+    p = env["cli"].build_parser()
+    visible = lambda **k: [r["session_id"] for r in
+                           history.find_sessions(ignored=db.ignored_sessions(), **k)]
+    assert sid in visible()                         # present before archiving
+
+    # archive by id-prefix
+    a = p.parse_args(["rm", "5d14bfa6"]); assert a.func(a) == 0
+    assert "archived session" in capsys.readouterr().out
+    assert sid in db.ignored_sessions()
+    assert sid not in visible()                     # hidden from default find
+    shown = [r for r in history.find_sessions(ignored=db.ignored_sessions(),
+                                              show_archived=True) if r["session_id"] == sid]
+    assert shown and shown[0]["archived"] is True
+
+    # cli find hides it; find --archived reveals it as archived
+    a = p.parse_args(["find"]); a.func(a)
+    assert sid not in capsys.readouterr().out
+    a = p.parse_args(["find", "--archived"]); a.func(a)
+    out = capsys.readouterr().out
+    assert sid in out and "archived" in out
+
+    # restore lifts the tombstone
+    a = p.parse_args(["rm", sid, "--restore"]); assert a.func(a) == 0
+    assert sid not in db.ignored_sessions() and sid in visible()
+
+    # purge deletes the transcript (and tombstones it)
+    a = p.parse_args(["rm", sid, "--purge"]); assert a.func(a) == 0
+    assert "deleted its transcript" in capsys.readouterr().out
+    assert not os.path.exists(path) and sid in db.ignored_sessions()
+
+
 def test_upgrade_clone_and_pipx(monkeypatch, capsys):
     from agents import cli
     calls = []

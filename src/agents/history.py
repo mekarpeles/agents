@@ -177,7 +177,8 @@ def _file_contains(path, q):
     return False
 
 
-def find_sessions(query=None, include_gone=False, deep=False, limit=None):
+def find_sessions(query=None, include_gone=False, deep=False, ignored=None,
+                  show_archived=False, limit=None):
     """Past Claude sessions, newest first. Resumable (transcript present) only
     unless include_gone. `query` is a case-insensitive substring.
 
@@ -186,12 +187,22 @@ def find_sessions(query=None, include_gone=False, deep=False, limit=None):
     also greps the full transcript *body* of every present session, so a session is
     found by what the agent actually did (tool calls, output, files it read), not
     just what the user said. deep implies include_gone (it searches everything), but
-    a gone session has no body to grep, so it can still only match on metadata."""
+    a gone session has no body to grep, so it can still only match on metadata.
+
+    `ignored` is a set of tombstoned sessionIds (the caller owns that store — this
+    module stays a leaf). Each row is tagged `archived` accordingly; archived rows
+    are dropped unless `show_archived`. Filtering happens before `limit` so a page
+    isn't silently thinned by hidden rows."""
+    ignored = ignored or set()
     rows = _rows()
     if deep:
         include_gone = True
     if not include_gone:
         rows = [r for r in rows if r["present"]]
+    for r in rows:
+        r["archived"] = r["session_id"] in ignored
+    if not show_archived:
+        rows = [r for r in rows if not r["archived"]]
     if query:
         q = query.lower()
         rows = [r for r in rows

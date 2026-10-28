@@ -258,6 +258,33 @@ def _existing_session(target):
     return None, None, target
 
 
+def _resolve_known_session(target):
+    """(sid, cwd, err) for an rm/archive target that names an *existing* session —
+    live or in history, by display name, exact sessionId, or id-prefix. Ambiguous
+    prefix → err (so a destructive --purge never hits the wrong one); nothing
+    matched → (None, None, None)."""
+    hits = {}  # sid -> cwd ; exact id/name wins outright
+    for rec in native.list_sessions():
+        s = rec.get("sessionId") or ""
+        if rec.get("name") == target or s == target:
+            return s, rec.get("cwd"), None
+        if len(target) >= 4 and s.startswith(target):
+            hits[s] = rec.get("cwd")
+    for r in history.find_sessions(include_gone=True):
+        s = r["session_id"]
+        if s == target:
+            return s, r["cwd"], None
+        if len(target) >= 6 and s.startswith(target):
+            hits.setdefault(s, r["cwd"])
+    if len(hits) > 1:
+        return None, None, (f"'{target}' matches {len(hits)} sessions "
+                            f"({', '.join(x[:8] for x in hits)}) — use more characters")
+    if hits:
+        sid, cwd = next(iter(hits.items()))
+        return sid, cwd, None
+    return None, None, None
+
+
 def _host_key(reg, team_override=None):
     """The tmux session an agent colocates in: its team (lead + reports share one
     session), or an explicit team when bringing a whole team up. None → the host
@@ -279,6 +306,7 @@ def _up_one(name, host, prompt=None, cwd=None, identity=None, inject=True,
         sid, scwd, _ = _existing_session(name)
         if sid:
             db.register(name, session_id=sid, cwd=scwd or cwd)  # adopt an existing session
+            db.unignore_session(sid)  # adopting restores it, like launching an archived agent
         else:
             db.register(name, cwd=cwd)   # brand-new agent
         reg = db.get(name)
@@ -718,11 +746,16 @@ def cmd_ls(args):
     # Flat view also lists live sessions that aren't registered agents (team view
     # is a registry structure, so it shows only registered agents).
     if not team_mode and not narrowed:
+        ignored = db.ignored_sessions()
         for sid, rec in live.items():
             if sid in bound:
                 continue
+            archived = sid in ignored
+            if archived and not show_archived:
+                continue
             desc = titles.get(sid) or os.path.basename((rec.get("cwd") or "").rstrip("/"))
-            entries.append({"status": "up", "name": rec.get("name") or "—",
+            entries.append({"status": "archived" if archived else "up",
+                            "name": rec.get("name") or "—",
                             "sid": (sid or "")[:8], "type": "", "groups": "",
                             "desc": desc, "team": ""})
 
@@ -736,7 +769,8 @@ def cmd_ls(args):
 
 def cmd_find(args):
     rows = history.find_sessions(
-        args.query, deep=args.all, limit=args.limit or 20)
+        args.query, deep=args.all, ignored=db.ignored_sessions(),
+        show_archived=args.archived, limit=args.limit or 20)
     running = {r.get("sessionId") for r in native.list_sessions()}
 
     if args.json:
@@ -755,7 +789,8 @@ def cmd_find(args):
 
     print(f"{'SESSION':<36} {'STATE':<8} {'MSGS':>5}  {'CWD':<22} TITLE")
     for r in rows:
-        state = ("running" if r["session_id"] in running
+        state = ("archived" if r.get("archived")
+                 else "running" if r["session_id"] in running
                  else "idle" if r["present"] else "gone")
         cwd = os.path.basename(r["cwd"].rstrip("/")) or r["cwd"]
         print(f"{r['session_id']:<36} {state:<8} {r['msgs']:>5}  "
@@ -857,10 +892,27 @@ def cmd_whoami(args):
 
 
 def cmd_rm(args):
-    """Remove (archive) an agent: hidden from `ls` but kept so it can come back
-    (`ls -a` to see it, `up`/`register` to restore). --purge deletes the row."""
-    if not db.get(args.name):
-        return _err(f"no agent named '{args.name}'")
+    """Remove (archive) an agent OR an unregistered session. For an agent: hidden
+    from `ls` but kept (`ls -a` to see it, `up`/`register` to restore); --purge
+    deletes the row. For a bare session id/prefix (anything `find` lists that isn't
+    an agent): archive tombstones it so find/ls hide it (`find --archived` to see,
+    --restore to lift); --purge also deletes its transcript (non-resumable)."""
+    if db.get(args.name):
+        return _rm_agent(args)
+    # Not an agent name — treat the target as a raw session.
+    sid, cwd, err = _resolve_known_session(args.name)
+    if err:
+        return _err(err)
+    if not sid:
+        return _err(f"'{args.name}' is not a registered agent or a known session")
+    return _rm_session(args.name, sid, cwd, args)
+
+
+def _rm_agent(args):
+    if args.restore:
+        db.set_archived(args.name, False)
+        print(f"agents: restored '{args.name}'")
+        return 0
     if args.purge:
         db.remove(args.name)
         print(f"agents: purged '{args.name}' from the registry "
@@ -869,6 +921,33 @@ def cmd_rm(args):
     db.set_archived(args.name, True)
     print(f"agents: removed '{args.name}' — hidden from `ls` "
           f"(`agents ls -a` shows it; `agents up {args.name}` restores it)")
+    return 0
+
+
+def _rm_session(label, sid, cwd, args):
+    short = sid[:8]
+    if args.restore:
+        lifted = db.unignore_session(sid)
+        print(f"agents: restored session {short}" if lifted
+              else f"agents: session {short} was not archived")
+        return 0
+    db.ignore_session(sid, reason=args.reason)
+    if args.purge:
+        path = history.transcript_path(cwd, sid) if cwd else None
+        gone = False
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+                gone = True
+            except OSError as e:
+                return _err(f"archived session {short} but could not delete its "
+                            f"transcript: {e}")
+        tail = (" and deleted its transcript (no longer resumable)" if gone
+                else " (no transcript on disk to delete)")
+        print(f"agents: purged session {short}{tail}")
+        return 0
+    print(f"agents: archived session {short} — hidden from `find`/`ls` "
+          f"(`agents find --archived` shows it; `agents rm {short} --restore` lifts it)")
     return 0
 
 
@@ -1316,6 +1395,8 @@ def build_parser():
     s.add_argument("-a", "--all", action="store_true",
                    help="deep search: grep full transcript contents across every "
                         "session (incl. non-resumable); slower, searches everything")
+    s.add_argument("--archived", action="store_true",
+                   help="include sessions you archived with `rm` (hidden by default)")
     s.add_argument("-n", "--limit", type=int, help="max results (default 20)")
     s.add_argument("--json", action="store_true", help="JSONL output")
     s.set_defaults(func=cmd_find)
@@ -1337,10 +1418,15 @@ def build_parser():
     s.add_argument("--json", action="store_true", help="machine-readable output")
     s.set_defaults(func=cmd_whoami)
 
-    s = sub.add_parser("rm", help="remove an agent (archive; hidden from ls, kept)")
-    s.add_argument("name")
+    s = sub.add_parser("rm", help="archive an agent or an unregistered session "
+                                  "(hidden from ls/find, kept)")
+    s.add_argument("name", help="an agent name, or a session id/prefix from `find`")
     s.add_argument("--purge", action="store_true",
-                   help="delete the registry row instead of archiving (keeps home dir)")
+                   help="hard delete: an agent's registry row (keeps home dir), or "
+                        "a session's transcript (no longer resumable)")
+    s.add_argument("--restore", action="store_true",
+                   help="lift the archive instead of setting it")
+    s.add_argument("--reason", help="note why a session was archived")
     s.set_defaults(func=cmd_rm)
 
     s = sub.add_parser("migrate", help="migrate cmux state (~/.cmux) into agents")
