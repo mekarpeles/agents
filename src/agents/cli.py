@@ -736,7 +736,7 @@ def cmd_ls(args):
 
 def cmd_find(args):
     rows = history.find_sessions(
-        args.query, include_gone=args.all, limit=args.limit or 20)
+        args.query, deep=args.all, limit=args.limit or 20)
     running = {r.get("sessionId") for r in native.list_sessions()}
 
     if args.json:
@@ -1314,7 +1314,8 @@ def build_parser():
                        help="find past Claude sessions to resume or adopt")
     s.add_argument("query", nargs="?", help="substring over title, cwd, prompts")
     s.add_argument("-a", "--all", action="store_true",
-                   help="include sessions whose transcript is gone (not resumable)")
+                   help="deep search: grep full transcript contents across every "
+                        "session (incl. non-resumable); slower, searches everything")
     s.add_argument("-n", "--limit", type=int, help="max results (default 20)")
     s.add_argument("--json", action="store_true", help="JSONL output")
     s.set_defaults(func=cmd_find)

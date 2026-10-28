@@ -163,16 +163,40 @@ def _rows():
     return rows
 
 
-def find_sessions(query=None, include_gone=False, limit=None):
+def _file_contains(path, q):
+    """Case-insensitive substring scan of a transcript body, short-circuiting on
+    the first hit so a match in a huge file is cheap. Reads line by line to keep
+    memory bounded; decoding errors are ignored (transcripts carry base64/binary)."""
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                if q in line.lower():
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def find_sessions(query=None, include_gone=False, deep=False, limit=None):
     """Past Claude sessions, newest first. Resumable (transcript present) only
-    unless include_gone. `query` is a case-insensitive substring over the title,
-    cwd and every prompt."""
+    unless include_gone. `query` is a case-insensitive substring.
+
+    By default the query matches session *metadata* only — the title, cwd and every
+    prompt the user typed — straight off the cached index, so it is fast. `deep`
+    also greps the full transcript *body* of every present session, so a session is
+    found by what the agent actually did (tool calls, output, files it read), not
+    just what the user said. deep implies include_gone (it searches everything), but
+    a gone session has no body to grep, so it can still only match on metadata."""
     rows = _rows()
+    if deep:
+        include_gone = True
     if not include_gone:
         rows = [r for r in rows if r["present"]]
     if query:
         q = query.lower()
-        rows = [r for r in rows if q in r["_haystack"]]
+        rows = [r for r in rows
+                if q in r["_haystack"]
+                or (deep and r["present"] and _file_contains(r["path"], q))]
     rows.sort(key=lambda r: r["ended_ts"], reverse=True)
     if limit:
         rows = rows[:limit]

@@ -781,6 +781,41 @@ def test_find_command_no_matches(env, monkeypatch, capsys):
     assert "no matching sessions" in capsys.readouterr().out
 
 
+def test_find_deep_searches_transcript_body(env, tmp_path, capsys):
+    """Default find matches session metadata only (title/cwd/typed prompts); deep
+    (-a) greps the transcript body, so a session is findable by what the agent did,
+    not just what the user said."""
+    import json
+    from agents import history
+
+    cwd, sid = "/home/mek/Projects/alpha", "sid-deep-1"
+    ts = 1_700_000_000_000
+    with open(tmp_path / "history.jsonl", "w") as fh:
+        fh.write(json.dumps({"sessionId": sid, "project": cwd,
+                             "timestamp": ts, "display": "please build the thing"}) + "\n")
+    path = history.transcript_path(cwd, sid)   # uses the real cwd->slug mapping
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        fh.write(json.dumps({"type": "user",
+                             "message": {"content": "please build the thing"}}) + "\n")
+        fh.write(json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "I adjusted the gearbox torque in waf.conf"}]}}) + "\n")
+
+    # "gearbox" lives only in the body: metadata search misses it, deep finds it.
+    assert history.find_sessions("gearbox") == []
+    deep = history.find_sessions("gearbox", deep=True)
+    assert [r["session_id"] for r in deep] == [sid]
+    # a metadata term (the cwd) matches without deep
+    assert [r["session_id"] for r in history.find_sessions("alpha")] == [sid]
+
+    # the cli wires -a to deep: plain `find gearbox` finds nothing, `find -a gearbox` hits
+    p = env["cli"].build_parser()
+    a = p.parse_args(["find", "gearbox"]); a.func(a)
+    assert "no matching sessions" in capsys.readouterr().out
+    a = p.parse_args(["find", "-a", "gearbox"]); a.func(a)
+    assert sid in capsys.readouterr().out
+
+
 def test_upgrade_clone_and_pipx(monkeypatch, capsys):
     from agents import cli
     calls = []
