@@ -202,26 +202,47 @@ def cmd_up(args):
     return rc
 
 
+def _resolve_target(target):
+    """Resolve a name/id shown in `ls` to (session_id, label).
+
+    Checks registered agents first, then live sessions — by display name, exact
+    sessionId, or sessionId prefix — so anything `ls` lists (registered or a loose
+    live session like 'projects-70' or 'dc33a929') can be acted on. (None, target)
+    when nothing matches.
+    """
+    reg = db.get(target)
+    if reg:
+        return (reg.get("session_id") or home.read_session_id(target)), target
+    sid = home.read_session_id(target)
+    if sid:
+        return sid, target
+    for rec in native.list_sessions():
+        s = rec.get("sessionId") or ""
+        if rec.get("name") == target or s == target or (target and s.startswith(target)):
+            return s, rec.get("name") or s[:8]
+    return None, target
+
+
 def _down_one(name):
-    """Stop one agent: SIGTERM the live pid resolved from its sessionId.
+    """Stop one agent or live session: SIGTERM the pid resolved from its sessionId.
 
     Host-agnostic — when claude exits, its tmux window/herdr pane closes on its
     own, so there is nothing host-specific to tear down here.
     """
-    sid = home.read_session_id(name)
+    sid, label = _resolve_target(name)
     if not sid:
-        return _err(f"'{name}' has no bound session")
+        return _err(f"'{name}' is not a registered agent or live session")
     try:
         rec = native.resolve(sid)
     except native.SessionNotFound:
-        print(f"agents: '{name}' is not running")
+        print(f"agents: '{label}' is not running")
         return 0
     pid = rec.get("pid")
     try:
         os.kill(pid, 15)  # SIGTERM
-        print(f"agents: stopped '{name}' (pid {pid})")
+        print(f"agents: stopped '{label}' (pid {pid})")
     except ProcessLookupError:
-        print(f"agents: '{name}' already stopped")
+        print(f"agents: '{label}' already stopped")
     return 0
 
 
@@ -376,11 +397,9 @@ def cmd_send(args):
         sid, target = args.session, args.session[:8]
         parts = ([args.name] if args.name else []) + args.message
     elif args.name:
-        reg = db.get(args.name)
-        sid = (reg or {}).get("session_id") or home.read_session_id(args.name)
-        target = args.name
+        sid, target = _resolve_target(args.name)
         if not sid:
-            return _err(f"'{args.name}' has no bound session")
+            return _err(f"'{args.name}' is not a registered agent or live session")
     else:
         return _err("specify an agent name or -s <session_id>")
     if not parts:
@@ -735,6 +754,10 @@ def cmd_complete(args):
         items = sorted({a["workspace"] for a in db.all_agents() if a.get("workspace")})
     elif args.kind == "types":
         items = home.available_types()
+    elif args.kind == "targets":  # registered agents + live sessions (down/send)
+        names = {a["name"] for a in db.all_agents()}
+        live = {r.get("name") for r in native.list_sessions() if r.get("name")}
+        items = sorted(names | live)
     else:
         items = []
     print("\n".join(items))
@@ -904,7 +927,7 @@ def build_parser():
     # hidden: the data source the completion scripts call on each <TAB>.
     # No `help=` kwarg, so argparse omits it from the command listing entirely.
     s = sub.add_parser("_complete")
-    s.add_argument("kind", choices=["names", "groups", "types"])
+    s.add_argument("kind", choices=["names", "groups", "types", "targets"])
     s.set_defaults(func=cmd_complete)
 
     # `help` as a real subcommand too, so `agents help` works like `agents --help`.

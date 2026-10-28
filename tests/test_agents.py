@@ -489,3 +489,50 @@ def test_send_by_session_id(env, monkeypatch, capsys):
 def test_send_requires_a_target(env):
     a = env["cli"].build_parser().parse_args(["send"])  # no name, no -s
     assert a.func(a) == 1
+
+
+def test_resolve_target_registered_and_live(env, monkeypatch):
+    cli = env["cli"]
+    monkeypatch.setattr(env["native"], "list_sessions",
+                        lambda *a, **k: [{"sessionId": "dc33a929-aaaa-bbbb", "name": "projects-70"}])
+    assert cli._resolve_target("projects-70")[0] == "dc33a929-aaaa-bbbb"   # by display name
+    assert cli._resolve_target("dc33a929")[0] == "dc33a929-aaaa-bbbb"      # by id prefix
+    env["db"].register("pam"); env["db"].set_session("pam", "sid-pam")
+    assert cli._resolve_target("pam") == ("sid-pam", "pam")                # registered wins
+    assert cli._resolve_target("nope")[0] is None
+
+
+def test_down_stops_a_live_session(env, monkeypatch, capsys):
+    cli = env["cli"]
+    monkeypatch.setattr(env["native"], "list_sessions",
+                        lambda *a, **k: [{"sessionId": "live-sid", "name": "projects-70"}])
+    monkeypatch.setattr(env["native"], "resolve", lambda sid: {"pid": 999999})
+    killed = {}
+    monkeypatch.setattr(cli.os, "kill", lambda pid, sig: killed.update(pid=pid, sig=sig))
+    a = cli.build_parser().parse_args(["down", "projects-70"])
+    assert a.func(a) == 0
+    assert killed == {"pid": 999999, "sig": 15}
+    assert "stopped 'projects-70'" in capsys.readouterr().out
+
+
+def test_send_to_live_session_by_name(env, monkeypatch, capsys):
+    cli = env["cli"]
+    monkeypatch.setattr(env["native"], "list_sessions",
+                        lambda *a, **k: [{"sessionId": "live-sid", "name": "projects-70"}])
+    sent = {}
+    monkeypatch.setattr(env["native"], "send",
+                        lambda sid, msg, sender=None: sent.update(sid=sid, msg=msg))
+    a = cli.build_parser().parse_args(["send", "projects-70", "ping"])
+    assert a.func(a) == 0
+    assert sent["sid"] == "live-sid" and sent["msg"] == "ping"
+
+
+def test_complete_targets_includes_live_sessions(env, monkeypatch, capsys):
+    cli = env["cli"]
+    env["db"].register("pam")
+    monkeypatch.setattr(env["native"], "list_sessions",
+                        lambda *a, **k: [{"sessionId": "x", "name": "projects-70"}])
+    a = cli.build_parser().parse_args(["_complete", "targets"])
+    assert a.func(a) == 0
+    out = capsys.readouterr().out.split()
+    assert "pam" in out and "projects-70" in out
