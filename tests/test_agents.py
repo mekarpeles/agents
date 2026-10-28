@@ -563,6 +563,28 @@ def test_attach_will_not_kill_live_agent_without_consent(env, monkeypatch):
     assert killed == []            # the process was left alone
 
 
+def test_attach_targets_real_window_by_pid(env, monkeypatch):
+    """attach finds the agent's actual tmux window by pid — even when its registry
+    team names a different session that happens to exist (the modsec-daily bug:
+    team 'ada' session existed with another agent's window, so attach leaked
+    'can't find window'). It must attach to where the pid actually runs."""
+    cli, native = env["cli"], env["native"]
+    env["db"].register("modsec-daily", agent_type="ada", team="ada", session_id="sid-m")
+    env["home"].ensure_home("modsec-daily")
+    env["home"].write_session_id("modsec-daily", "sid-m")
+    monkeypatch.setattr(native, "resolve", lambda sid: {"pid": 66300})      # live
+    host = cli._host(type("A", (), {"host": None})())
+    monkeypatch.setattr(type(host), "locate_pid",
+                        staticmethod(lambda pid: "agents-modsec-daily:0" if pid == 66300 else None))
+    class _Attached(Exception): pass
+    monkeypatch.setattr(type(host), "attach_window",
+                        lambda self, target: (_ for _ in ()).throw(_Attached(target)))
+    a = cli.build_parser().parse_args(["attach", "modsec-daily"])
+    with pytest.raises(_Attached) as e:
+        a.func(a)
+    assert str(e.value) == "agents-modsec-daily:0"   # its real window, not team 'ada'
+
+
 def test_ensure_stopped_for_restart_gate(env, monkeypatch):
     """The shared gate behind attach-into-tmux and rename: refuse a live agent
     without force; stop it with force; pass through when it isn't running."""

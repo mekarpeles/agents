@@ -106,13 +106,44 @@ class Tmux(Host):
         return int(out[0]) if out else None
 
     def has_window(self, agent, group=None):
-        sess = group if agent is None else self._session(agent, group)
-        return subprocess.run(["tmux", "has-session", "-t", sess],
-                              capture_output=True).returncode == 0
+        # A whole-team/group attach targets a session; a named agent targets a
+        # specific window *within* a session, so check the window exists — not just
+        # the session (a team session can exist holding other agents' windows).
+        if agent is None:
+            return subprocess.run(["tmux", "has-session", "-t", group],
+                                  capture_output=True).returncode == 0
+        sess = self._session(agent, group)
+        r = subprocess.run(["tmux", "list-windows", "-t", sess, "-F", "#{window_name}"],
+                           capture_output=True, text=True)
+        return r.returncode == 0 and agent in r.stdout.split()
+
+    @staticmethod
+    def locate_pid(pid):
+        """The 'session:window' whose pane runs `pid`, or None. An agent's *real*
+        tmux location, found by pid the way `down` finds it — independent of which
+        session it was launched into (a team-tagged agent still lives in the
+        standalone session it started in until a team `up` colocates it, so the
+        team-derived name is not where it actually is)."""
+        if pid is None:
+            return None
+        r = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", "#{pane_pid} #{session_name}:#{window_index}"],
+            capture_output=True, text=True)
+        if r.returncode != 0:
+            return None
+        for line in r.stdout.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2 and parts[0] == str(pid):
+                return parts[1]
+        return None
+
+    def attach_window(self, target):
+        """Attach to an exact 'session:window' target (replaces this process)."""
+        os.execvp("tmux", ["tmux", "attach", "-t", target])
 
     def attach(self, agent, group=None):
         target = group if agent is None else self._target(agent, group)
-        # Guard so tmux's raw "can't find session: <sess>" never leaks — an agent
+        # Guard so tmux's raw "can't find session/window" never leaks — an agent
         # bound to a live session that runs *outside* tmux (foreground/adopted)
         # has no pane to attach to, and that's the common cause.
         if not self.has_window(agent, group):

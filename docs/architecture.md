@@ -106,8 +106,13 @@ the pid resolved from the sessionId, and the window/pane closes when claude exit
 - **tmux** (default) — detached. A **team** is a tmux session (`agents-<name>`
   when standalone, the team name for a member), each agent a window — `cli`
   passes the team as the host's session key, so the lead and its reports share
-  one session (`_host_key`). Groups never key the host. `attach`/`detach` map to
-  `tmux attach` / `detach-client`.
+  one session (`_host_key`). Groups never key the host. `attach` finds the agent's
+  **real window by its live pid** (`locate_pid`), the way `down` does — so it works
+  wherever the agent actually runs even if its registry team now names a different
+  session (a team-tagged agent stays in the standalone session it was launched into
+  until a team `up`). Only when the agent runs outside tmux (foreground/adopted, no
+  pane) does attach fall back to restarting it into a tmux window — refused while
+  live unless `-f` (the shared restart gate). `detach` maps to `detach-client`.
 - **herdr** — a detached herdr tab in a herdr workspace (needs a running herdr).
 - **foreground** — claude attached to the current terminal; no team, no attach.
 

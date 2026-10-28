@@ -63,6 +63,26 @@ def test_tmux_start_creates_window(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(not shutil.which("tmux"), reason="tmux not installed")
+def test_tmux_has_window_checks_window_and_locate_pid(tmp_path, monkeypatch):
+    # has_window must check the specific WINDOW, not just the session: a team
+    # session can exist holding *other* agents' windows (the modsec-daily bug,
+    # where attach found session 'ada' and leaked "can't find window"). locate_pid
+    # finds an agent's real window by pid regardless of session naming.
+    monkeypatch.setenv("TMUX_TMPDIR", str(tmp_path))
+    t = hosts.Tmux()
+    try:
+        launched = t.start("a1", ["sleep", "30"], str(tmp_path), {})        # agents-a1
+        t.start("other", ["sleep", "30"], str(tmp_path), {}, group="team")  # session 'team'
+        assert t.has_window("a1", group=None) is True        # a1's own session
+        assert t.has_window("a1", group="team") is False     # 'team' exists, no a1 window
+        assert t.has_window(None, group="team") is True      # whole-session check
+        assert t.locate_pid(launched.pid) == "agents-a1:0"   # real window, by pid
+        assert t.locate_pid(2 ** 31) is None
+    finally:
+        subprocess.run(["tmux", "kill-server"], capture_output=True)
+
+
+@pytest.mark.skipif(not shutil.which("tmux"), reason="tmux not installed")
 def test_tmux_attach_missing_session_is_clear(tmp_path, monkeypatch):
     # No tmux window for this agent -> a clear error, never execvp into tmux's
     # raw "can't find session" leak.

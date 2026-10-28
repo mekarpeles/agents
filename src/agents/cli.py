@@ -552,6 +552,24 @@ def _promote_to_tmux(name, host, team):
     return _up_one(name, host, inject=False, team=team)  # resume detached in tmux
 
 
+def _attach_live_window(host, name):
+    """If `name`'s live session runs in a tmux pane, `exec tmux attach` to that
+    exact window (never returns). Otherwise return False. Finds the window by the
+    agent's live pid — wherever it actually runs (a standalone `agents-<name>`
+    session or a team session), regardless of what its registry team now says."""
+    sid, _ = _resolve_target(name)
+    if not (sid and _is_running(sid)):
+        return False
+    try:
+        pid = native.resolve(sid).get("pid")
+    except native.SessionNotFound:
+        return False
+    loc = host.locate_pid(pid) if pid else None
+    if loc:
+        host.attach_window(loc)  # execvp — does not return
+    return False
+
+
 def cmd_attach(args):
     host = _host(args)
     # A whole-team attach, or a non-tmux host (herdr/foreground manages its own
@@ -560,13 +578,12 @@ def cmd_attach(args):
         return _attach_detach(args, "attach")
     if not args.name:
         return _err("specify an agent name or --team <team>")
-    key = (db.get(args.name) or {}).get("team")  # the agent's tmux session key
-    if host.has_window(args.name, group=key):
-        return _attach_detach(args, "attach")
-    # Up but not in tmux (foreground/adopted): attaching means restarting it in a
-    # tmux window, which interrupts it — so a live agent is refused unless --force
-    # (the same gate `rename` uses). A mid-task agent shouldn't be moved on a stray
-    # attach.
+    # Already live in a tmux pane somewhere? Attach to its real window.
+    if _attach_live_window(host, args.name):
+        return 0  # unreachable: attach_window execs
+    # Not in any tmux pane: it's live-but-foreground/adopted (restart to move it
+    # in) or down (just bring it up). Restarting a live agent interrupts it, so
+    # refuse unless --force (the same gate `rename` uses).
     status, _ = _ensure_stopped_for_restart(args.name, getattr(args, "force", False))
     if status == "needs_force":
         return _err(f"'{args.name}' is running outside tmux; attaching restarts it. "
@@ -576,11 +593,14 @@ def cmd_attach(args):
     if status == "stuck":
         return _err(f"'{args.name}' did not stop in time — run `agents down "
                     f"{args.name}` then `agents attach {args.name}`.")
+    key = (db.get(args.name) or {}).get("team")  # colocate into its team session
     rc = _promote_to_tmux(args.name, host, key)
     if rc != 0:
         return rc
     time.sleep(0.3)  # let the new pane register before we hand off to tmux
-    return _attach_detach(args, "attach")
+    if _attach_live_window(host, args.name):
+        return 0
+    return _attach_detach(args, "attach")  # fallback: team/standalone naming
 
 
 def cmd_detach(args):
