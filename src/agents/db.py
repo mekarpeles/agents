@@ -131,6 +131,17 @@ def set_team(name, team):
         c.execute("UPDATE agents SET team=? WHERE name=?", (team, name))
 
 
+def rename(old, new):
+    """Rename an agent and keep the reporting tree intact: change its own name and
+    repoint every report whose team was `old` to `new`. One transaction. The
+    caller is responsible for the filesystem side (moving the home dir and any
+    Claude transcript) and for ensuring `new` is free."""
+    init()
+    with _conn() as c:
+        c.execute("UPDATE agents SET name=? WHERE name=?", (new, old))
+        c.execute("UPDATE agents SET team=? WHERE team=?", (new, old))
+
+
 def set_groups(name, groups):
     """Replace an agent's groups (a list or comma string; [] / '' clears them)."""
     init()

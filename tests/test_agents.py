@@ -139,6 +139,44 @@ def test_register_with_session_id(env):
     assert env["home"].read_session_id("ada") == "5662a36c-05c3-44cd-9916-a1e9aaa50b3b"
 
 
+def test_register_by_agent_sets_team_to_caller(env, monkeypatch):
+    # An agent (identified by $CLAUDE_CODE_SESSION_ID, like whoami) that registers
+    # another agent becomes its lead automatically — no explicit --team needed.
+    env["db"].register("ada", agent_type="lead", session_id="sess-ada")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-ada")
+    a = env["cli"].build_parser().parse_args(["register", "saul-report", "--role", "Solr"])
+    assert a.func(a) == 0
+    assert env["db"].get("saul-report")["team"] == "ada"
+
+
+def test_register_explicit_team_overrides_caller(env, monkeypatch):
+    # An explicit --team wins over the caller-as-lead default.
+    env["db"].register("ada", agent_type="lead", session_id="sess-ada")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-ada")
+    a = env["cli"].build_parser().parse_args(
+        ["register", "r", "--team", "someone-else"])
+    assert a.func(a) == 0
+    assert env["db"].get("r")["team"] == "someone-else"
+
+
+def test_register_by_human_sets_no_team(env, monkeypatch):
+    # A human shell (unregistered session, or none) gets no auto-lead.
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    a = env["cli"].build_parser().parse_args(["register", "standalone"])
+    assert a.func(a) == 0
+    assert env["db"].get("standalone")["team"] is None
+
+
+def test_register_self_does_not_self_lead(env, monkeypatch):
+    # Re-registering yourself (adopting your own session) must not make you your
+    # own lead.
+    env["db"].register("ada", agent_type="lead", session_id="sess-ada")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-ada")
+    a = env["cli"].build_parser().parse_args(["register", "ada", "--role", "lead"])
+    assert a.func(a) == 0
+    assert env["db"].get("ada")["team"] is None
+
+
 def test_transcript_exists(env, tmp_path, monkeypatch):
     proj = tmp_path / "projects"
     monkeypatch.setattr(env["session"], "PROJECTS_DIR", str(proj))
@@ -509,8 +547,9 @@ def test_attach_promotes_live_nontmux_session(env, monkeypatch):
 
 
 def test_attach_will_not_kill_live_agent_without_consent(env, monkeypatch):
-    """A live, out-of-tmux agent is not restarted on a bare `attach`: with no tty
-    to confirm, attach refuses rather than interrupting possible mid-task work."""
+    """A live, out-of-tmux agent is not restarted on a bare `attach`: it refuses
+    (same refuse-unless---force gate `rename` uses) rather than interrupting
+    possible mid-task work. `attach -f` is the way to move it."""
     cli, native = env["cli"], env["native"]
     env["db"].register("busy", cwd="/w/busy", session_id="sid-x")
     env["home"].ensure_home("busy", cwd="/w/busy")
@@ -520,8 +559,163 @@ def test_attach_will_not_kill_live_agent_without_consent(env, monkeypatch):
     monkeypatch.setattr(cli.os, "kill", lambda *a: killed.append(a))
 
     a = cli.build_parser().parse_args(["attach", "busy"])
-    assert a.func(a) == 1          # refused (no tty -> default No)
+    assert a.func(a) == 1          # refused — needs --force
     assert killed == []            # the process was left alone
+
+
+def test_ensure_stopped_for_restart_gate(env, monkeypatch):
+    """The shared gate behind attach-into-tmux and rename: refuse a live agent
+    without force; stop it with force; pass through when it isn't running."""
+    cli, native = env["cli"], env["native"]
+    env["db"].register("busy", session_id="sid-x")
+    env["home"].ensure_home("busy")
+    env["home"].write_session_id("busy", "sid-x")
+
+    # live + no force -> 'needs_force', nothing killed
+    monkeypatch.setattr(native, "resolve", lambda sid: {"pid": 5})
+    killed = []
+    monkeypatch.setattr(cli.os, "kill", lambda *a: killed.append(a))
+    assert cli._ensure_stopped_for_restart("busy", False)[0] == "needs_force"
+    assert killed == []
+
+    # live + force -> stops it -> 'stopped'
+    state = {"alive": True}
+    def resolve(sid):
+        if state["alive"]:
+            return {"pid": 5}
+        raise native.SessionNotFound(sid)
+    monkeypatch.setattr(native, "resolve", resolve)
+    monkeypatch.setattr(cli.os, "kill", lambda p, s: state.update(alive=False))
+    assert cli._ensure_stopped_for_restart("busy", True)[0] == "stopped"
+
+    # not running -> 'ok'
+    monkeypatch.setattr(native, "resolve",
+                        lambda sid: (_ for _ in ()).throw(native.SessionNotFound(sid)))
+    assert cli._ensure_stopped_for_restart("busy", False)[0] == "ok"
+
+
+def _not_running(env, monkeypatch):
+    native = env["native"]
+    monkeypatch.setattr(native, "resolve",
+                        lambda sid: (_ for _ in ()).throw(native.SessionNotFound(sid)))
+
+
+def test_rename_external_cwd_leaves_transcript(env, tmp_path, monkeypatch):
+    """Renaming an agent whose cwd is a real project checkout moves its home and
+    repoints the row, but leaves cwd (and so the Claude transcript) untouched —
+    resume keeps working because the cwd slug didn't change."""
+    cli, db, home, session = env["cli"], env["db"], env["home"], env["session"]
+    proj = tmp_path / "projects"
+    monkeypatch.setattr(session, "PROJECTS_DIR", str(proj))
+    db.register("saul", role="Solr", cwd="/Projects/ada", session_id="sid-1")
+    home.ensure_home("saul", cwd="/Projects/ada")
+    home.write_session_id("saul", "sid-1")
+    slug = proj / "-Projects-ada"
+    slug.mkdir(parents=True)
+    (slug / "sid-1.jsonl").write_text("{}")
+    _not_running(env, monkeypatch)
+
+    a = cli.build_parser().parse_args(["rename", "saul", "sol"])
+    assert a.func(a) == 0
+    assert db.get("saul") is None
+    assert db.get("sol")["session_id"] == "sid-1"
+    assert db.get("sol")["cwd"] == "/Projects/ada"          # cwd unchanged
+    assert os.path.isdir(home.home_dir("sol"))
+    assert not os.path.isdir(home.home_dir("saul"))
+    assert (slug / "sid-1.jsonl").exists()                  # transcript stayed put
+
+
+def test_rename_home_cwd_moves_transcript(env, tmp_path, monkeypatch):
+    """Renaming a default-cwd agent (cwd == home dir) moves the home AND the Claude
+    transcript to the new cwd slug, and rewrites cwd — otherwise `claude --resume`
+    would look in the wrong, empty project dir."""
+    cli, db, home, session = env["cli"], env["db"], env["home"], env["session"]
+    proj = tmp_path / "projects"
+    monkeypatch.setattr(session, "PROJECTS_DIR", str(proj))
+    db.register("ada", session_id="sid-9")      # no cwd -> defaults to home dir
+    home.ensure_home("ada")
+    home.write_session_id("ada", "sid-9")
+    old_home = home.home_dir("ada")
+    old_slug = proj / old_home.replace("/", "-")
+    old_slug.mkdir(parents=True)
+    (old_slug / "sid-9.jsonl").write_text("{}")
+    _not_running(env, monkeypatch)
+
+    a = cli.build_parser().parse_args(["rename", "ada", "ada-lead"])
+    assert a.func(a) == 0
+    new_home = home.home_dir("ada-lead")
+    assert db.get("ada-lead")["cwd"] == new_home            # cwd follows the home
+    assert home.agent_cwd("ada-lead") == new_home           # home/cwd file too
+    new_slug = proj / new_home.replace("/", "-")
+    assert (new_slug / "sid-9.jsonl").exists()              # transcript moved
+    assert not old_slug.exists()                            # old slug cleaned up
+
+
+def test_rename_repoints_reports(env, monkeypatch):
+    """A rename updates every report whose team pointed at the old name, so the
+    reporting tree survives."""
+    cli, db, home = env["cli"], env["db"], env["home"]
+    db.register("ada", agent_type="lead")
+    db.register("r1", team="ada")
+    db.register("r2", team="ada")
+    for n in ("ada", "r1", "r2"):
+        home.ensure_home(n)
+    _not_running(env, monkeypatch)
+
+    a = cli.build_parser().parse_args(["rename", "ada", "program-lead"])
+    assert a.func(a) == 0
+    assert db.get("r1")["team"] == "program-lead"
+    assert db.get("r2")["team"] == "program-lead"
+
+
+def test_rename_refuses_live_without_force(env, monkeypatch):
+    cli, db, home, native = env["cli"], env["db"], env["home"], env["native"]
+    db.register("busy", session_id="sid-x")
+    home.ensure_home("busy")
+    home.write_session_id("busy", "sid-x")
+    monkeypatch.setattr(native, "resolve", lambda sid: {"pid": 7})   # always live
+    killed = []
+    monkeypatch.setattr(cli.os, "kill", lambda *a: killed.append(a))
+
+    a = cli.build_parser().parse_args(["rename", "busy", "calm"])
+    assert a.func(a) == 1
+    assert db.get("busy") is not None and db.get("calm") is None     # untouched
+    assert killed == []
+    assert os.path.isdir(home.home_dir("busy"))
+
+
+def test_rename_force_stops_then_renames(env, monkeypatch):
+    cli, db, home, native = env["cli"], env["db"], env["home"], env["native"]
+    db.register("busy", session_id="sid-x")
+    home.ensure_home("busy")
+    home.write_session_id("busy", "sid-x")
+    state = {"alive": True}
+    def resolve(sid):
+        if state["alive"]:
+            return {"pid": 999}
+        raise native.SessionNotFound(sid)
+    monkeypatch.setattr(native, "resolve", resolve)
+    killed = []
+    monkeypatch.setattr(cli.os, "kill",
+                        lambda p, s: (killed.append((p, s)), state.update(alive=False)))
+
+    a = cli.build_parser().parse_args(["rename", "-f", "busy", "calm"])
+    assert a.func(a) == 0
+    assert db.get("busy") is None and db.get("calm") is not None
+    assert killed == [(999, 15)]
+
+
+def test_rename_rejects_bad_targets(env, monkeypatch):
+    cli, db, home = env["cli"], env["db"], env["home"]
+    db.register("a"); home.ensure_home("a")
+    db.register("b"); home.ensure_home("b")
+    _not_running(env, monkeypatch)
+    p = cli.build_parser()
+    assert p.parse_args(["rename", "a", "b"]).func(p.parse_args(["rename", "a", "b"])) == 1   # collision
+    assert p.parse_args(["rename", "a", "a"]).func(p.parse_args(["rename", "a", "a"])) == 1   # same name
+    assert p.parse_args(["rename", "a", "x/y"]).func(p.parse_args(["rename", "a", "x/y"])) == 1  # bad name
+    assert p.parse_args(["rename", "nope", "z"]).func(p.parse_args(["rename", "nope", "z"])) == 1  # missing
+    assert db.get("a") is not None and db.get("b") is not None    # all no-ops
 
 
 def test_find_command_table_and_json(env, monkeypatch, capsys):

@@ -95,18 +95,35 @@ def _bind_and_inject(name, pid, is_first_start, inject, sid_hint=None):
     return sid
 
 
+def _caller_agent():
+    """The registered agent making this call, resolved from $CLAUDE_CODE_SESSION_ID
+    (the same identity `whoami` uses). None when the caller is a human shell or a
+    session the registry doesn't know."""
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    return db.get_by_session(sid) if sid else None
+
+
 def cmd_register(args):
+    # When an *agent* registers another agent, the new agent reports to it by
+    # default (the caller is the lead) — unless an explicit --team was given.
+    team = args.team
+    lead = None
+    if team is None:
+        caller = _caller_agent()
+        if caller and caller.get("name") != args.name:
+            team = lead = caller["name"]
     db.register(args.name, agent_type=args.type, role=args.role,
                 workspace=args.workspace, cwd=args.cwd, initial_prompt=args.prompt,
                 identity_path=args.identity, session_id=args.session_id,
-                team=args.team)
+                team=team)
     db.set_archived(args.name, False)  # (re-)registering reactivates an archived agent
     home.ensure_home(args.name, cwd=args.cwd, agent_type=args.type,
                      identity_path=args.identity, initial_prompt=args.prompt,
                      session_id=args.session_id)
     bound = f" (bound to session {args.session_id})" if args.session_id else ""
+    reports = f" (reports to {lead})" if lead else ""
     print(f"agents: registered '{args.name}' ({args.type}); "
-          f"home: {home.home_dir(args.name)}{bound}")
+          f"home: {home.home_dir(args.name)}{bound}{reports}")
     return 0
 
 
@@ -131,6 +148,93 @@ def cmd_team(args):
     db.set_team(args.name, args.team if args.op == "add" else None)
     cur = db.get(args.name).get("team")
     print(f"agents: '{args.name}' team: {cur or '(none)'}")
+    return 0
+
+
+def _rehome_transcripts(old_cwd, new_cwd):
+    """Move an agent's Claude transcripts from the project dir keyed by `old_cwd`
+    to the one keyed by `new_cwd`. Claude derives a session's project dir purely
+    from the cwd string (slashes → dashes), so when an agent's cwd changes (its cwd
+    was its home dir and the home moved on rename), the transcript has to follow or
+    `claude --resume` looks in the wrong, empty dir. Returns the count moved."""
+    old_slug = os.path.join(session.PROJECTS_DIR, old_cwd.replace("/", "-"))
+    new_slug = os.path.join(session.PROJECTS_DIR, new_cwd.replace("/", "-"))
+    if not os.path.isdir(old_slug) or os.path.realpath(old_slug) == os.path.realpath(new_slug):
+        return 0
+    os.makedirs(new_slug, exist_ok=True)
+    moved = 0
+    for fn in os.listdir(old_slug):
+        dst = os.path.join(new_slug, fn)
+        if not os.path.exists(dst):
+            os.rename(os.path.join(old_slug, fn), dst)
+            moved += 1
+    try:
+        os.rmdir(old_slug)  # tidy up if now empty (the whole dir was this agent's)
+    except OSError:
+        pass
+    return moved
+
+
+def cmd_rename(args):
+    """Rename an agent end to end: the registry row, its home dir, the reports that
+    pointed at it as their lead, and — when its cwd was its home dir — the Claude
+    transcript, so `up` still resumes. Refuses while the agent is live (its tmux
+    session and session binding would be orphaned) unless --force stops it first."""
+    old, new = args.old, args.new
+    if not db.get(old):
+        return _err(f"'{old}' is not a registered agent")
+    if old == new:
+        return _err("the new name is the same as the old one")
+    if "/" in new or new in (".", ".."):
+        return _err(f"'{new}' is not a valid agent name")
+    if db.get(new):
+        return _err(f"'{new}' already exists — pick another name")
+    old_home, new_home = home.home_dir(old), home.home_dir(new)
+    if os.path.exists(new_home):
+        return _err(f"home dir {new_home} already exists — remove it or pick "
+                    f"another name")
+
+    status, sid = _ensure_stopped_for_restart(old, getattr(args, "force", False))
+    if status == "needs_force":
+        return _err(f"'{old}' is running; stop it first (`agents down {old}`) or "
+                    f"`agents rename -f {old} {new}` to stop and rename it")
+    if status == "stuck":
+        return _err(f"'{old}' did not stop in time — run `agents down {old}` then "
+                    f"retry the rename")
+
+    # cwd that was the home dir has to move with the home (and so does the
+    # transcript); a cwd pointing at a real project checkout is name-independent
+    # and stays put — renaming such an agent never touches Claude's transcript.
+    reg = db.get(old)
+    cwd = reg.get("cwd") or home.agent_cwd(old)
+    cwd_is_home = bool(cwd) and os.path.realpath(cwd) == os.path.realpath(old_home)
+
+    db.rename(old, new)  # name + repoint reports (one transaction)
+    if os.path.isdir(old_home):
+        os.rename(old_home, new_home)
+
+    new_cwd, moved = cwd, 0
+    if cwd_is_home:
+        new_cwd = new_home
+        try:
+            with open(os.path.join(new_home, "cwd"), "w") as f:
+                f.write(new_cwd)
+        except OSError:
+            pass
+        if sid:
+            moved = _rehome_transcripts(cwd, new_cwd)
+    # repoint the name-embedding columns (cwd if it moved, identity_path if it
+    # pointed inside the old home); register coalesces, leaving the rest untouched.
+    ident = reg.get("identity_path")
+    if ident and ident.startswith(old_home):
+        ident = ident.replace(old_home, new_home, 1)
+    db.register(new, cwd=new_cwd, identity_path=ident)
+
+    extra = f"; moved {moved} transcript file(s)" if moved else ""
+    tail = " (it was stopped to rename)" if status == "stopped" else ""
+    print(f"agents: renamed '{old}' → '{new}'{extra}{tail}")
+    if status == "stopped":
+        print(f"        `agents up {new}` to resume it.")
     return 0
 
 
@@ -378,6 +482,24 @@ def _await_stopped(sid, timeout=4.0):
         return True
 
 
+def _ensure_stopped_for_restart(name, force):
+    """Shared gate for ops that restart an agent's session in place (attach into
+    tmux, rename): such an op interrupts a live agent, so it refuses unless forced.
+    Returns (status, sid):
+      'ok'          — not running (or no session); proceed.
+      'stopped'     — was running; --force stopped it; proceed.
+      'needs_force' — running and no --force; the caller refuses with its own hint.
+      'stuck'       — --force, but it would not stop; the caller errors.
+    """
+    sid, _ = _resolve_target(name)
+    if not (sid and _is_running(sid)):
+        return "ok", sid
+    if not force:
+        return "needs_force", sid
+    _down_one(name)
+    return ("stopped" if _await_stopped(sid) else "stuck"), sid
+
+
 def _promote_to_tmux(name, host, team):
     """Make a live-but-not-tmux agent attachable: stop its current process and
     resume the same session inside a tmux window (its team's session, or a
@@ -416,18 +538,18 @@ def cmd_attach(args):
     if host.has_window(args.name, group=key):
         return _attach_detach(args, "attach")
     # Up but not in tmux (foreground/adopted): attaching means restarting it in a
-    # tmux window. That interrupts it, so if it's live we confirm first (--force
-    # skips the prompt) — a mid-task agent shouldn't be killed on a stray attach.
-    sid, _ = _resolve_target(args.name)
-    live = sid and _is_running(sid)
-    if live and not getattr(args, "force", False):
-        if not _prompt_yes_no(
-                f"'{args.name}' is running outside tmux; attaching restarts it "
-                f"(resumed from its session). Interrupt and move it into tmux?",
-                default=False):
-            return _err(f"left '{args.name}' running — `agents send {args.name} "
-                        f"...` to message it without interrupting, or "
-                        f"`agents attach --force {args.name}` to move it anyway.")
+    # tmux window, which interrupts it — so a live agent is refused unless --force
+    # (the same gate `rename` uses). A mid-task agent shouldn't be moved on a stray
+    # attach.
+    status, _ = _ensure_stopped_for_restart(args.name, getattr(args, "force", False))
+    if status == "needs_force":
+        return _err(f"'{args.name}' is running outside tmux; attaching restarts it. "
+                    f"`agents send {args.name} ...` to message it without "
+                    f"interrupting, or `agents attach -f {args.name}` to move it "
+                    f"into tmux.")
+    if status == "stuck":
+        return _err(f"'{args.name}' did not stop in time — run `agents down "
+                    f"{args.name}` then `agents attach {args.name}`.")
     rc = _promote_to_tmux(args.name, host, key)
     if rc != 0:
         return rc
@@ -1058,6 +1180,13 @@ def build_parser():
     s.add_argument("name")
     s.add_argument("team", nargs="?", help="lead name (required for add)")
     s.set_defaults(func=cmd_team)
+
+    s = sub.add_parser("rename", help="rename an agent (home, reports, transcript follow)")
+    s.add_argument("old")
+    s.add_argument("new")
+    s.add_argument("-f", "--force", action="store_true",
+                   help="if it's running, stop it first, then rename")
+    s.set_defaults(func=cmd_rename)
 
     s = sub.add_parser("up", help="launch (or resume) an agent, team, group, or type")
     s.add_argument("name", nargs="?")

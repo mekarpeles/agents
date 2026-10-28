@@ -117,7 +117,7 @@ the pid resolved from the sessionId, and the window/pane closes when claude exit
 |---|---|---|
 | **Query** | `ls` (registry), `find` (sessions), `whoami` (this session) | — |
 | **Provision** | `register`, `migrate`, `configure` | home, type, tooling, config |
-| **Organize** | `group` (add/rm labels), `team` (set/clear lead) | the registry row |
+| **Organize** | `group` (add/rm labels), `team` (set/clear lead), `rename` | the registry row |
 | **Manage** | `rm` (archive; `--purge` deletes) | the registry row |
 | **Communicate** | `send` | a running agent's socket |
 | **Operate** | `up`, `down`, `attach`, `detach` | the live process |
@@ -132,6 +132,34 @@ session on the machine (live or not) so you can adopt one (`register
 selector; `ls` filters by `--group`/`--type`/`-t <team>` and by status
 (`--running`/`--down`/`--archived`, archived hidden unless `-a`; those filters also
 drop the unregistered sessions).
+
+## Rename
+
+`rename <old> <new>` is a whole-identity move, because an agent's name is embedded
+in more than the registry key. It renames the row and **repoints every report**
+whose `team` was `<old>` (one transaction, `db.rename`), moves the home dir, and
+fixes the name-bearing columns (`identity_path`, and `cwd` *only when it was the
+home dir*). The subtle part is Claude's transcript: Claude keys a session's project
+dir purely off the cwd string, so a **default-cwd** agent (cwd == home dir) would
+lose `--resume` when its home moves — `rename` moves the transcript to the new cwd
+slug to keep it resumable. An agent whose cwd is a real project checkout is
+name-independent: its cwd and transcript stay put, and the rename can't break
+resume.
+
+Renaming restarts nothing by itself, but a *live* agent's tmux session (`agents-<name>`)
+and binding would be orphaned, so `rename` **refuses while the agent is up** unless
+`-f`/`--force`, which stops it first (lossless — the sessionId resumes from disk).
+This refuse-unless-force gate is shared with `attach`: moving a live out-of-tmux
+agent into a tmux window also restarts it, so both go through
+`_ensure_stopped_for_restart` (`ok` / `stopped` / `needs_force` / `stuck`).
+
+## Who's registering — auto-lead
+
+`register` resolves its caller the same way `whoami` does (`$CLAUDE_CODE_SESSION_ID`
+→ `db.get_by_session`). When the caller is itself a registered agent, the new agent
+`team`-defaults to the caller — a lead that spins up its own reports wires the tree
+up without an extra `team add`. An explicit `--team` always wins, and an agent
+re-registering itself never becomes its own lead.
 
 ## Launch mode & trust
 

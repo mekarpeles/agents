@@ -53,7 +53,16 @@ Claude config.
     `NAME SESSION STATUS TYPE GROUPS DESC` + status lights + archive; `ls -t` is
     the team tree), **`find`** (Claude session history), **`whoami`** (this
     session, by `$CLAUDE_CODE_SESSION_ID`). Edit membership with **`group
-    add|rm`** and **`team add|rm`**.
+    add|rm`** and **`team add|rm`**; **`rename`** moves the whole identity (row,
+    home, reports' `team`, and the transcript when cwd == home dir).
+- **One gate for "this op restarts the session."** `rename` (live tmux session
+  would orphan) and `attach` of a live *out-of-tmux* agent (attaching restarts it)
+  both refuse unless `-f`/`--force` via `_ensure_stopped_for_restart`. Don't add a
+  second confirm style — extend that helper.
+- **`register` auto-sets the lead.** If the caller is itself a registered agent
+  (resolved by `$CLAUDE_CODE_SESSION_ID`, like `whoami`), the new agent's `team`
+  defaults to the caller unless `--team` is explicit. Keep this — it's how a lead
+  wires up its own reports.
 - **Agent types** live in `src/agents/types/<type>/AGENTS.md` (the doctrine an
   agent is seeded with). Distinct from a running agent's **`PROMPT.md`** (its task).
 - **Work is tracked in GitHub issues**, not in markdown TODOs. If you find a plan

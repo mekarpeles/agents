@@ -63,6 +63,7 @@ agents send pam "status?"     # message a registered agent
 agents send -s <session> "hi" # …or any live session by id (no registry needed)
 agents group add pam infra    # add/remove group labels (pam may be in many)
 agents team add ada1 agents-lead   # set (or `team rm ada1` to clear) its team
+agents rename ada1 ada-solr   # rename (home, reports & transcript follow; -f if live)
 agents whoami                 # who am I? — an agent identifies itself (--json too)
 agents find pam               # search past sessions to resume or adopt
 agents ls                     # every active session (named or not); aligned columns
@@ -92,7 +93,10 @@ three tab-complete those sessions. `ls` shows a status light — **green** up,
 DESC` columns; `ls -t` switches to a **team tree** (reports nested under their
 lead). It hides archived agents unless you pass `-a`/`--all`, and filters by
 `--group`/`--type`/`-t <team>`/`--running`/`--down`/`--archived` (which also drop
-the unregistered sessions). `attach`/`detach` take a name or `--team`. Hosts:
+the unregistered sessions). `attach`/`detach` take a name or `--team`; attaching a
+live agent that's running *outside* tmux (foreground/adopted) restarts it in a tmux
+window, so it refuses unless you pass `-f`/`--force` (the same gate `rename` uses —
+`send` is the no-interrupt alternative). Hosts:
 `tmux` (default), `herdr`, `foreground` (`--host`). Short aliases: `list` (`ls`),
 `attach` (`a`), `detach` (`d`). An unknown command is rejected (it never becomes
 an agent name), so `agents list` and `agents up --help` can't register junk agents.
@@ -130,6 +134,11 @@ and intersect:
   (comma-separated on `register`, or `agents group add|rm <name> <g>…`). Groups
   select and filter, they don't colocate.
 - a **type** (`--type`) is a kind of agent (`lead`, `ada`, …).
+
+When an **agent** registers another agent (identified by its own
+`$CLAUDE_CODE_SESSION_ID`, the way `whoami` works), the new agent reports to it by
+default — the caller becomes its lead — unless an explicit `--team` is given. So a
+lead spinning up its own reports gets the team wired up for free.
 
 ```bash
 agents ls -t                             # team tree: reports nested under leads
