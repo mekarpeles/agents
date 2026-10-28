@@ -13,8 +13,10 @@ designed to be used by both agents and humans.
 2. **Find and resume past sessions** — search previous sessions and resume the
    one you want.
 3. **Human-readable nicknames** — assign a friendly name to any agent.
-4. **Groups** — gather related agents into a group and bring the whole set up
-   together with `up --group <group>` (one tmux session, a window per agent).
+4. **Teams & groups** — a **team** is a lead and the agents reporting to it;
+   `up --team <lead>` brings the whole team up colocated in one tmux session (a
+   window per member). **Groups** are labels an agent can carry several of
+   (circles), for selecting and filtering (`--group <g>`).
 5. **Persistent per-agent setup** — a durable home directory, skills, auth, and
    per-agent tooling for each agent.
 6. **Remove / archive** an agent when it's no longer needed — `rm` hides it from
@@ -48,18 +50,24 @@ The command is `agents` (`agents configure` can add a short `ag` alias, if that
 name is free on your system):
 
 ```bash
-agents register pam --group web --role "edge" --identity ./pam.md
+agents register pam --group web,edge --role "edge" --identity ./pam.md
+agents register ada1 --type ada --team agents-lead --group web   # reports to a lead
 agents register ada --cwd ~/Projects/ada --session-id <id>   # adopt an existing session
 agents up pam                 # start in tmux (detached); resumes if already bound
-agents up --group web         # bring up every agent in the 'web' group
+agents up --team agents-lead  # bring up a team (lead + reports) in one tmux session
+agents up --group web         # bring up every agent labelled 'web'
 agents up ada --host foreground   # or run attached to this terminal
 agents attach pam             # attach to its tmux window (Ctrl-b d to detach)
+agents attach --team agents-lead  # attach to the team's shared session
 agents send pam "status?"     # message a registered agent
 agents send -s <session> "hi" # …or any live session by id (no registry needed)
+agents group add pam infra    # add/remove group labels (pam may be in many)
+agents team add ada1 agents-lead   # set (or `team rm ada1` to clear) its team
 agents whoami                 # who am I? — an agent identifies itself (--json too)
 agents find pam               # search past sessions to resume or adopt
-agents ls                     # every active session (named or not) + titles
-agents down pam               # stop it   (agents down --group web  stops the group)
+agents ls                     # every active session (named or not); aligned columns
+agents ls -t                  # team/tree view: reports nested under their lead
+agents down pam               # stop it   (agents down --team agents-lead stops the team)
 agents rm pam                 # remove (archive): hidden from ls, kept (ls -a shows it)
 agents configure              # permission mode, default host, tmux, tab-completion
 agents upgrade                # update the agents CLI itself (from GitHub)
@@ -71,16 +79,20 @@ workspace is pre-trusted so `up` can start them unattended. `agents configure`
 (also run by the installer) sets the mode and the default host, and offers to
 install tmux; `--mode bypassPermissions` is the explicit, un-gated opt-in.
 
-`up` and `down` take an agent name or the `--group <group>` / `--type <type>`
-selectors (short: `-g` / `-t`). `ls` lists your registered agents **and** every
-live Claude session that isn't one. **Everything is a session:** `up`, `down`, and
-`send` all take a live (or past) session's displayed name or id, not just a
-registered agent — `up <session>` resumes it (adopting it into the registry),
-`down`/`send` act on it (`send -s <id>` targets by id), and all three tab-complete
-those sessions. `ls` shows a status light — **green** up, **orange** down, **red** archived — and a
-TITLE column; it hides archived agents unless you pass `-a`/`--all`, and filters
-by `--group`/`--type`/`--running`/`--down`/`--archived` (which also drop the
-unregistered sessions). `attach`/`detach` take a name or `--group`. Hosts:
+`up` and `down` take an agent name or a selector: `--team <lead>` (short `-t`), `--group
+<group>` (short `-g`), or `--type <type>`. A **team** colocates — `up --team X`
+brings the lead X and everyone reporting to it up in one tmux session; a **group**
+is just a label for selecting (an agent can be in several). `ls` lists your
+registered agents **and** every live Claude session that isn't one. **Everything is
+a session:** `up`, `down`, and `send` all take a live (or past) session's displayed
+name or id, not just a registered agent — `up <session>` resumes it (adopting it
+into the registry), `down`/`send` act on it (`send -s <id>` targets by id), and all
+three tab-complete those sessions. `ls` shows a status light — **green** up,
+**orange** down, **red** archived — with aligned `NAME SESSION STATUS TYPE GROUPS
+DESC` columns; `ls -t` switches to a **team tree** (reports nested under their
+lead). It hides archived agents unless you pass `-a`/`--all`, and filters by
+`--group`/`--type`/`-t <team>`/`--running`/`--down`/`--archived` (which also drop
+the unregistered sessions). `attach`/`detach` take a name or `--team`. Hosts:
 `tmux` (default), `herdr`, `foreground` (`--host`). Short aliases: `list` (`ls`),
 `attach` (`a`), `detach` (`d`). An unknown command is rejected (it never becomes
 an agent name), so `agents list` and `agents up --help` can't register junk agents.
@@ -106,21 +118,30 @@ already has (no injected name), resolving it to the registry row, home, and task
 It works for an adopted session too, not only ones `agents` launched; `--json` for
 machine use, or `--session-id <id>` to look up another session.
 
-## Groups & types
+## Teams, groups & types
 
-A **group** (`--group`, short `-g`) is a set of agents; a **type** (`--type`,
-short `-t`) is a kind of agent (`lead`, `ada`, …). `ls`, `up`, and `down` take
-both and intersect them — so a group with a `lead` and its `ada`s is managed as
-one unit:
+Three ways to organize and target agents, all of which `ls`/`up`/`down` accept
+and intersect:
+
+- a **team** (`--team`, short `-t`) is a lead plus the agents reporting to it —
+  the colocation unit (one tmux session) and the reporting relationship `ls -t`
+  draws as a tree. One team per agent. A team is named after its lead.
+- a **group** (`--group`, short `-g`) is a label; an agent can carry several
+  (comma-separated on `register`, or `agents group add|rm <name> <g>…`). Groups
+  select and filter, they don't colocate.
+- a **type** (`--type`) is a kind of agent (`lead`, `ada`, …).
 
 ```bash
+agents ls -t                             # team tree: reports nested under leads
+agents ls -t payments                    # just the 'payments' team's tree
 agents ls --type lead                    # every lead
-agents ls --type ada                     # every ADA
-agents ls --group payments               # the whole 'payments' group
-agents ls --group payments --type ada    # that group's ADAs
-agents up --group payments               # bring the group up together (lead + ADAs)
+agents ls --group web                    # every agent labelled 'web'
+agents up --team payments-lead           # bring a team up together (lead + reports)
+agents up --group web                    # bring up everything labelled 'web'
 agents up --type lead                    # bring every lead up
-agents down --group payments             # stop the group
+agents down --team payments-lead         # stop the team
+agents team add ada-7 payments-lead      # ada-7 now reports to that lead
+agents group add ada-7 web,search        # …and carries the web + search labels
 ```
 
 ## Finding sessions

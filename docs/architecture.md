@@ -12,7 +12,7 @@ bracketed-paste injection to carry.
 Each layer owns one job; delivery is independent of where an agent runs.
 
 ```
-  registry   agents.db (SQLite/WAL)  — names, group, type, archive, sessionId binding
+  registry   agents.db (SQLite/WAL)  — names, team, groups, type, archive, sessionId
   host       hosts.py                — where claude runs: tmux | herdr | foreground
   transport  transport.py            — deliver to a running agent's native socket
 ```
@@ -22,7 +22,7 @@ Each layer owns one job; delivery is independent of where an agent runs.
 | module | responsibility |
 |---|---|
 | `cli.py` | argparse + orchestration — the only module that spans all layers |
-| `db.py` | SQLite registry + `select(group, type)`, the one slicer |
+| `db.py` | SQLite registry + `select(group, type, team)`, the one slicer |
 | `config.py` | persistent `~/.agents/config.json`: permission mode + default host |
 | `home.py` | per-agent home dir + agent types |
 | `trust.py` | pre-accept Claude's workspace-trust dialog for an agent's cwd |
@@ -49,16 +49,22 @@ rather than spawning a fresh agent.
 
 ## Primitives
 
-- **Agent** — a registry row: `name, type, group, cwd, session binding, home`.
-- **Group** — a set of agents (the `workspace` column; `group` is a SQL reserved
-  word). Materialized at runtime as one tmux session. A *lead + its ADAs* is just
-  a group whose members have types.
+- **Agent** — a registry row: `name, type, team, groups, cwd, session binding, home`.
+- **Team** — a lead plus the agents reporting to it; the `team` column on a report
+  holds its lead's name (a team is named after its lead). One team per agent. The
+  team is the **colocation unit**: `up --team X` materializes it as one tmux
+  session named X (the lead plus every report, a window each), and `ls -t` draws
+  it as a tree. A *lead + its ADAs* is exactly a team.
+- **Group** — a label an agent carries, zero or more (the `workspace` column,
+  comma-separated; `group` is a SQL reserved word). Groups **select and filter**
+  (`select(group=…)` tests membership, not equality); they do not colocate.
 - **Type** — the kind (`ada`, `lead`, …); seeds the home `AGENTS.md`, drives slicing.
 - **Home** — `~/.agents/<name>/`: `AGENTS.md` (doctrine) · `PROMPT.md` (task) ·
   `identity.md` (optional) · `cwd` · `last-session-id`.
 - **Host** — where claude runs; one pluggable seam (`hosts.py`).
 - **Transport** — native socket delivery, host-agnostic.
-- **Selector** — `name | --group group | --type type`, the one way to target agents.
+- **Selector** — `name | --team team | --group group | --type type` (short `-t` /
+  `-g`), the one way to target a set of agents. The selectors intersect.
 - **Session binding** — the `sessionId`, which makes resume correct *and* lets a
   session identify itself (`whoami`).
 - **Archive** — `rm` sets the `archived` flag (soft-hide) rather than deleting;
@@ -97,11 +103,13 @@ operating instructions arrive through `AGENTS.md` for free.
 A host launches claude and returns its pid. `down` is host-agnostic: it SIGTERMs
 the pid resolved from the sessionId, and the window/pane closes when claude exits.
 
-- **tmux** (default) — detached. A group is a tmux session (`agents-<name>` when
-  standalone, the group name when grouped), each agent a window. `attach`/`detach`
-  map to `tmux attach` / `detach-client`.
+- **tmux** (default) — detached. A **team** is a tmux session (`agents-<name>`
+  when standalone, the team name for a member), each agent a window — `cli`
+  passes the team as the host's session key, so the lead and its reports share
+  one session (`_host_key`). Groups never key the host. `attach`/`detach` map to
+  `tmux attach` / `detach-client`.
 - **herdr** — a detached herdr tab in a herdr workspace (needs a running herdr).
-- **foreground** — claude attached to the current terminal; no group, no attach.
+- **foreground** — claude attached to the current terminal; no team, no attach.
 
 ## Commands, by category
 
@@ -109,18 +117,21 @@ the pid resolved from the sessionId, and the window/pane closes when claude exit
 |---|---|---|
 | **Query** | `ls` (registry), `find` (sessions), `whoami` (this session) | — |
 | **Provision** | `register`, `migrate`, `configure` | home, type, tooling, config |
+| **Organize** | `group` (add/rm labels), `team` (set/clear lead) | the registry row |
 | **Manage** | `rm` (archive; `--purge` deletes) | the registry row |
 | **Communicate** | `send` | a running agent's socket |
 | **Operate** | `up`, `down`, `attach`, `detach` | the live process |
 
 `ls` lists agents you manage **and** every live session that isn't one — it joins
 the registry, the live sockets (`transport.list_sessions`), and history titles, so
-anything `up` is visible and addressable (`send -s <id>`). `find` searches every
-Claude session on the machine (live or not) so you can adopt one
-(`register --session-id`). `up` and `down` take the `name | --group | --type`
-selector; `ls` filters by `--group`/`--type` and by status (`--running`/`--down`/
-`--archived`, archived hidden unless `-a`; those filters also drop the unregistered
-sessions) and prints a colored status light.
+anything `up` is visible and addressable (`send -s <id>`). It prints aligned
+`NAME SESSION STATUS TYPE GROUPS DESC` columns with a colored status light, and
+`ls -t` nests reports under their lead as a tree. `find` searches every Claude
+session on the machine (live or not) so you can adopt one (`register
+--session-id`). `up` and `down` take the `name | --team | --group | --type`
+selector; `ls` filters by `--group`/`--type`/`-t <team>` and by status
+(`--running`/`--down`/`--archived`, archived hidden unless `-a`; those filters also
+drop the unregistered sessions).
 
 ## Launch mode & trust
 

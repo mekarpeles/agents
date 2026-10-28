@@ -40,13 +40,20 @@ Claude config.
 
 ## Conventions
 
-- **Terminology is settled — use it:** a set of agents is a **group** (`--group`,
-  short `-g`), never "team" or "workspace" (the SQL column is `workspace` only
-  because `group` is a reserved word). A kind of agent is a **type** (`--type`,
-  short `-t`): `ada`, `lead`. Lead with the long form in docs/help — the bare
-  `-g`/`-t` confused the maintainer. The reads: **`ls`** (registry, with status
-  lights + archive), **`find`** (Claude session history), **`whoami`** (this
-  session, by `$CLAUDE_CODE_SESSION_ID`).
+- **Terminology is settled — use it:**
+  - a **team** is a lead plus its reports (`--team`, short **`-t`**); the `team`
+    column on a report holds its lead's name. One per agent. It's the tmux
+    colocation unit (`up --team` → one session) and what `ls -t` trees.
+  - a **group** is a label an agent carries, *many* per agent (`--group`, short
+    `-g`; comma-separated, stored in the `workspace` column only because `group`
+    is a SQL reserved word). Groups select/filter, they don't colocate.
+  - a **type** is a kind of agent (`--type`, **long form only** now — `-t` is
+    team): `ada`, `lead`.
+  - Lead with the long form in docs/help. The reads: **`ls`** (registry, aligned
+    `NAME SESSION STATUS TYPE GROUPS DESC` + status lights + archive; `ls -t` is
+    the team tree), **`find`** (Claude session history), **`whoami`** (this
+    session, by `$CLAUDE_CODE_SESSION_ID`). Edit membership with **`group
+    add|rm`** and **`team add|rm`**.
 - **Agent types** live in `src/agents/types/<type>/AGENTS.md` (the doctrine an
   agent is seeded with). Distinct from a running agent's **`PROMPT.md`** (its task).
 - **Work is tracked in GitHub issues**, not in markdown TODOs. If you find a plan

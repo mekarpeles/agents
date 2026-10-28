@@ -132,8 +132,8 @@ def test_register_with_session_id(env):
     # --session-id binds in the DB and writes last-session-id for `up` to resume.
     rc = env["cli"].cmd_register(type("A", (), {
         "name": "ada", "type": "default", "role": "lead", "workspace": "ol-leads",
-        "cwd": "/Users/mek/Projects/ada", "identity": None, "prompt": None,
-        "session_id": "5662a36c-05c3-44cd-9916-a1e9aaa50b3b"})())
+        "team": None, "cwd": "/Users/mek/Projects/ada", "identity": None,
+        "prompt": None, "session_id": "5662a36c-05c3-44cd-9916-a1e9aaa50b3b"})())
     assert rc == 0
     assert env["db"].get("ada")["session_id"] == "5662a36c-05c3-44cd-9916-a1e9aaa50b3b"
     assert env["home"].read_session_id("ada") == "5662a36c-05c3-44cd-9916-a1e9aaa50b3b"
@@ -232,17 +232,36 @@ class _StubHost:
 
 
 def test_up_group_fans_out(env, monkeypatch):
-    env["db"].register("a1", workspace="team")
-    env["db"].register("a2", workspace="team")
+    env["db"].register("a1", workspace="web")
+    env["db"].register("a2", workspace="web")
     env["db"].register("solo", workspace="other")
     stub = _StubHost()
     monkeypatch.setattr(env["cli"].hosts, "get", lambda _n: stub)
     rc = env["cli"].cmd_up(type("A", (), {
-        "name": None, "group": "team", "host": "tmux", "prompt": None,
-        "cwd": None, "identity": None, "no_inject": True})())
+        "name": None, "group": "web", "type": None, "team": None, "host": "tmux",
+        "prompt": None, "cwd": None, "identity": None, "no_inject": True})())
     assert rc == 0
     assert sorted(a for a, _ in stub.started) == ["a1", "a2"]      # not 'solo'
-    assert all(g == "team" for _, g in stub.started)               # grouped session
+    # a group is a label, not a session: each member runs in its own session
+    # (host key = its team, here None), not one colocated group session.
+    assert all(g is None for _, g in stub.started)
+
+
+def test_up_team_colocates(env, monkeypatch):
+    """`up --team <lead>` brings the lead + its reports up in ONE tmux session
+    named after the team (the host key is the team for every member)."""
+    env["db"].register("lead1", agent_type="lead")
+    env["db"].register("ada1", agent_type="ada", team="lead1")
+    env["db"].register("ada2", agent_type="ada", team="lead1")
+    env["db"].register("other", agent_type="ada", team="lead2")
+    stub = _StubHost()
+    monkeypatch.setattr(env["cli"].hosts, "get", lambda _n: stub)
+    rc = env["cli"].cmd_up(type("A", (), {
+        "name": None, "group": None, "type": None, "team": "lead1", "host": "tmux",
+        "prompt": None, "cwd": None, "identity": None, "no_inject": True})())
+    assert rc == 0
+    assert sorted(a for a, _ in stub.started) == ["ada1", "ada2", "lead1"]  # lead + reports
+    assert all(g == "lead1" for _, g in stub.started)   # one shared session
 
 
 def test_type_stored_and_queryable(env):
@@ -266,7 +285,7 @@ def test_up_by_type_fans_out(env, monkeypatch):
     stub = _StubHost()
     monkeypatch.setattr(env["cli"].hosts, "get", lambda _n: stub)
     rc = env["cli"].cmd_up(type("A", (), {
-        "name": None, "group": None, "type": "lead", "host": "tmux",
+        "name": None, "group": None, "type": "lead", "team": None, "host": "tmux",
         "prompt": None, "cwd": None, "identity": None, "no_inject": True})())
     assert rc == 0
     assert sorted(a for a, _ in stub.started) == ["l1", "l2"]   # not 'a1'
@@ -284,10 +303,16 @@ def test_down_group_fans_out(env):
     env["db"].register("d2", workspace="grp")
     env["home"].ensure_home("d1")
     env["home"].ensure_home("d2")
-    # No bound sessions -> each _down_one reports "no bound session" (rc 1), but
-    # the dispatch must visit both without raising.
-    rc = env["cli"].cmd_down(type("A", (), {"name": None, "group": "grp"})())
-    assert rc == 1
+    # No bound sessions -> each registered agent is simply "not running" (a no-op,
+    # rc 0), and the dispatch must visit both.
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = env["cli"].cmd_down(type("A", (), {
+            "name": None, "group": "grp", "type": None, "team": None})())
+    assert rc == 0
+    out = buf.getvalue()
+    assert "d1" in out and "d2" in out and "not running" in out
 
 
 def test_rm_keeps_home(env):
@@ -312,6 +337,69 @@ def test_ls_status_filters(env, capsys):
     assert "pam" not in out and "no agents match" in out
 
 
+def test_multi_group_register_and_membership(env):
+    db = env["db"]
+    db.register("ada", workspace="web, payments ,web")   # dup/space tolerant
+    assert db.groups_of(db.get("ada")) == ["web", "payments"]
+    assert [a["name"] for a in db.select(group="payments")] == ["ada"]
+    assert [a["name"] for a in db.select(group="web")] == ["ada"]
+    assert db.select(group="infra") == []
+    db.register("pam", workspace="web")
+    assert db.all_groups() == ["payments", "web"]
+
+
+def test_group_subcommand_add_and_remove(env):
+    env["db"].register("ada", workspace="web")
+    p = env["cli"].build_parser()
+    p.parse_args(["group", "add", "ada", "payments", "infra"]).func(
+        p.parse_args(["group", "add", "ada", "payments", "infra"]))
+    assert env["db"].groups_of(env["db"].get("ada")) == ["web", "payments", "infra"]
+    a = p.parse_args(["group", "rm", "ada", "web"])
+    assert a.func(a) == 0
+    assert env["db"].groups_of(env["db"].get("ada")) == ["payments", "infra"]
+
+
+def test_team_subcommand_set_and_clear(env):
+    env["db"].register("lead1", agent_type="lead")
+    env["db"].register("ada1", agent_type="ada")
+    p = env["cli"].build_parser()
+    a = p.parse_args(["team", "add", "ada1", "lead1"])
+    assert a.func(a) == 0
+    assert env["db"].get("ada1")["team"] == "lead1"
+    # team selection returns the lead + its reports
+    assert sorted(x["name"] for x in env["db"].select(team="lead1")) == ["ada1", "lead1"]
+    a = p.parse_args(["team", "rm", "ada1"])
+    assert a.func(a) == 0
+    assert env["db"].get("ada1")["team"] is None
+
+
+def test_ls_team_tree_view(env, capsys):
+    db = env["db"]
+    db.register("lead1", agent_type="lead")
+    db.register("ada1", agent_type="ada", team="lead1")
+    db.register("ada2", agent_type="ada", team="lead1")
+    db.register("loner", agent_type="ada")
+    p = env["cli"].build_parser()
+    a = p.parse_args(["ls", "-t"])
+    assert a.func(a) == 0
+    out = capsys.readouterr().out
+    assert "GROUPS" in out and "DESC" in out                 # new column headers
+    # reports nest under their lead with tree branches; loner is its own root
+    assert "lead1" in out and "─ ada1" in out and "─ ada2" in out
+    lead_line = next(l for l in out.splitlines() if "lead1" in l)
+    ada1_line = next(l for l in out.splitlines() if "ada1" in l)
+    assert out.index(lead_line) < out.index(ada1_line)      # lead above its report
+    assert "─" not in next(l for l in out.splitlines() if "loner" in l)  # root, no branch
+
+
+def test_complete_teams(env, capsys):
+    env["db"].register("lead1", agent_type="lead")
+    env["db"].register("ada1", agent_type="ada", team="lead1")
+    a = env["cli"].build_parser().parse_args(["_complete", "teams"])
+    assert a.func(a) == 0
+    assert capsys.readouterr().out.split() == ["lead1"]
+
+
 def test_whoami_by_session_id(env, monkeypatch, capsys):
     env["db"].register("ada-1581", agent_type="ada", workspace="br-prs",
                        role="eng", session_id="sess-123")
@@ -333,7 +421,7 @@ def test_whoami_json_and_explicit_flag(env, monkeypatch, capsys):
     a = env["cli"].build_parser().parse_args(["whoami", "--session-id", "s-pam", "--json"])
     assert a.func(a) == 0
     d = json.loads(capsys.readouterr().out)
-    assert d["name"] == "pam" and d["group"] == "web" and d["session_id"] == "s-pam"
+    assert d["name"] == "pam" and d["groups"] == ["web"] and d["session_id"] == "s-pam"
 
 
 def test_whoami_errors(env, monkeypatch):
