@@ -536,3 +536,32 @@ def test_complete_targets_includes_live_sessions(env, monkeypatch, capsys):
     assert a.func(a) == 0
     out = capsys.readouterr().out.split()
     assert "pam" in out and "projects-70" in out
+
+
+def test_existing_session_matches_live_and_history(env, monkeypatch):
+    from agents import history
+    cli = env["cli"]
+    monkeypatch.setattr(env["native"], "list_sessions",
+                        lambda *a, **k: [{"sessionId": "live-aaaa-bbbb", "cwd": "/w/a",
+                                          "name": "projects-70"}])
+    monkeypatch.setattr(history, "find_sessions",
+                        lambda *a, **k: [{"session_id": "idle-cccc-dddd", "cwd": "/w/b",
+                                          "title": "t"}])
+    assert cli._existing_session("projects-70")[:2] == ("live-aaaa-bbbb", "/w/a")  # live by name
+    assert cli._existing_session("live-aaaa")[0] == "live-aaaa-bbbb"               # live by id prefix
+    assert cli._existing_session("idle-c")[:2] == ("idle-cccc-dddd", "/w/b")       # idle via history
+    assert cli._existing_session("brand-new")[0] is None                           # a new agent
+
+
+def test_up_adopts_existing_live_session(env, monkeypatch):
+    cli = env["cli"]
+    monkeypatch.setattr(env["native"], "list_sessions",
+                        lambda *a, **k: [{"sessionId": "live-sid-123", "cwd": "/w/proj",
+                                          "name": "projects-70"}])
+    monkeypatch.setattr(env["native"], "resolve", lambda sid: {"pid": 4242})
+    host = _StubHost()
+    rc = cli._up_one("projects-70", host)      # unregistered, but names a live session
+    assert rc == 1                             # already running (resolved), not spawned
+    assert host.started == []
+    row = env["db"].get("projects-70")         # adopted into the registry with its binding
+    assert row["session_id"] == "live-sid-123" and row["cwd"] == "/w/proj"

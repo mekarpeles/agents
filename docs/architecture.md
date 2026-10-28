@@ -37,6 +37,16 @@ Each layer owns one job; delivery is independent of where an agent runs.
 Dependencies flow one way: `cli → {db, home, hosts, session, transport, history,
 migrate}`, `home → db`; everything else is a leaf. No cycles.
 
+## Everything is a session
+
+The session id is the universal handle, the way a file descriptor is in Unix.
+Registration just puts a friendly name and a home dir on top of a session; it is
+never a gate. So `ls` lists every live session (named or not), and `up`/`down`/
+`send` resolve any identifier shown there — a registered name, a live session's
+display name, or a sessionId/prefix (`cli._resolve_target`, `cli._existing_session`)
+— to its session. `up <loose-session>` adopts it into the registry and resumes it
+rather than spawning a fresh agent.
+
 ## Primitives
 
 - **Agent** — a registry row: `name, type, group, cwd, session binding, home`.

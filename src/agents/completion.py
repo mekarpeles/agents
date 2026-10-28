@@ -28,8 +28,8 @@ _agents() {
     -t|--type)  compadd -- ${(f)"$(agents _complete types 2>/dev/null)"};  return ;;
   esac
   case $cmd in
-    down|send)   compadd -- ${(f)"$(agents _complete targets 2>/dev/null)"} ;;
-    up|attach|detach|rm|a|d)
+    up|down|send)  compadd -- ${(f)"$(agents _complete targets 2>/dev/null)"} ;;
+    attach|detach|rm|a|d)
       compadd -- ${(f)"$(agents _complete names 2>/dev/null)"} ;;
   esac
 }
@@ -50,8 +50,8 @@ BASH = r"""_agents() {
     -t|--type)  COMPREPLY=( $(compgen -W "$(agents _complete types 2>/dev/null)" -- "$cur") ); return ;;
   esac
   case "$cmd" in
-    down|send)   COMPREPLY=( $(compgen -W "$(agents _complete targets 2>/dev/null)" -- "$cur") ) ;;
-    up|attach|detach|rm|a|d)
+    up|down|send)  COMPREPLY=( $(compgen -W "$(agents _complete targets 2>/dev/null)" -- "$cur") ) ;;
+    attach|detach|rm|a|d)
       COMPREPLY=( $(compgen -W "$(agents _complete names 2>/dev/null)" -- "$cur") ) ;;
   esac
 }

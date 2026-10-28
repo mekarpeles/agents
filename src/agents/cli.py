@@ -107,17 +107,46 @@ def cmd_register(args):
     return 0
 
 
+def _existing_session(target):
+    """An unregistered target that already names a session: (sid, cwd, label).
+
+    Everything is a session, so `up <target>` should resume an existing one rather
+    than spawn a fresh agent. Matches a live session (by display name or
+    id/prefix) or a past session in history (by id/prefix). (None, None, target)
+    when the target names nothing yet — a brand-new agent.
+    """
+    for rec in native.list_sessions():
+        s = rec.get("sessionId") or ""
+        if rec.get("name") == target or s == target or (target and s.startswith(target)):
+            return s, rec.get("cwd"), rec.get("name") or s[:8]
+    for r in history.find_sessions(include_gone=False):
+        s = r["session_id"]
+        if s == target or (len(target) >= 6 and s.startswith(target)):
+            return s, r["cwd"], s[:8]
+    return None, None, target
+
+
 def _up_one(name, host, prompt=None, cwd=None, identity=None, inject=True):
-    """Launch (or resume) one agent on `host`. Returns an exit code."""
+    """Launch, resume, or adopt-and-resume one session on `host`. Exit code.
+
+    A registered name uses its home; an unregistered name that already matches an
+    existing session (live or in history) is adopted and resumed; anything else is
+    a brand-new agent.
+    """
     reg = db.get(name)
     if reg is None:
-        db.register(name, cwd=cwd)   # one-shot up of an unregistered name
+        sid, scwd, _ = _existing_session(name)
+        if sid:
+            db.register(name, session_id=sid, cwd=scwd or cwd)  # adopt an existing session
+        else:
+            db.register(name, cwd=cwd)   # brand-new agent
         reg = db.get(name)
     if reg.get("archived"):
         db.set_archived(name, False)  # launching an archived agent restores it
     acwd = home.agent_cwd(name) or reg.get("cwd") or cwd or os.getcwd()
     home.ensure_home(name, cwd=acwd, identity_path=identity,
-                     initial_prompt=prompt or reg.get("initial_prompt"))
+                     initial_prompt=prompt or reg.get("initial_prompt"),
+                     session_id=reg.get("session_id"))  # carry an adopted binding into the home
     group = reg.get("workspace")
 
     resume_id = home.read_session_id(name)

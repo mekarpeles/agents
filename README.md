@@ -73,9 +73,11 @@ install tmux; `--mode bypassPermissions` is the explicit, un-gated opt-in.
 
 `up` and `down` take an agent name or the `--group <group>` / `--type <type>`
 selectors (short: `-g` / `-t`). `ls` lists your registered agents **and** every
-live Claude session that isn't one — anything `up` is addressable: `down` and
-`send` take a live session's displayed name or id (or `send -s <id>`), and both
-tab-complete those sessions. `ls` shows a status light — **green** up, **orange** down, **red** archived — and a
+live Claude session that isn't one. **Everything is a session:** `up`, `down`, and
+`send` all take a live (or past) session's displayed name or id, not just a
+registered agent — `up <session>` resumes it (adopting it into the registry),
+`down`/`send` act on it (`send -s <id>` targets by id), and all three tab-complete
+those sessions. `ls` shows a status light — **green** up, **orange** down, **red** archived — and a
 TITLE column; it hides archived agents unless you pass `-a`/`--all`, and filters
 by `--group`/`--type`/`--running`/`--down`/`--archived` (which also drop the
 unregistered sessions). `attach`/`detach` take a name or `--group`. Hosts:
