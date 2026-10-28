@@ -153,12 +153,13 @@ def cmd_team(args):
 
 def _rehome_transcripts(old_cwd, new_cwd):
     """Move an agent's Claude transcripts from the project dir keyed by `old_cwd`
-    to the one keyed by `new_cwd`. Claude derives a session's project dir purely
-    from the cwd string (slashes → dashes), so when an agent's cwd changes (its cwd
-    was its home dir and the home moved on rename), the transcript has to follow or
-    `claude --resume` looks in the wrong, empty dir. Returns the count moved."""
-    old_slug = os.path.join(session.PROJECTS_DIR, old_cwd.replace("/", "-"))
-    new_slug = os.path.join(session.PROJECTS_DIR, new_cwd.replace("/", "-"))
+    to the one keyed by `new_cwd`. Claude derives a session's project dir from the
+    cwd string (see `session.project_dir` — every non-alphanumeric char → '-'), so
+    when an agent's cwd changes (its cwd was its home dir and the home moved on
+    rename) the transcript has to follow or `claude --resume` looks in the wrong,
+    empty dir. Returns the count moved."""
+    old_slug = session.project_dir(old_cwd)
+    new_slug = session.project_dir(new_cwd)
     if not os.path.isdir(old_slug) or os.path.realpath(old_slug) == os.path.realpath(new_slug):
         return 0
     os.makedirs(new_slug, exist_ok=True)

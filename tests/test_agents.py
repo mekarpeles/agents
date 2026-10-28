@@ -600,19 +600,29 @@ def _not_running(env, monkeypatch):
                         lambda sid: (_ for _ in ()).throw(native.SessionNotFound(sid)))
 
 
+def test_project_dir_slug(env, monkeypatch):
+    """Claude's project dir replaces EVERY non-alphanumeric char with '-' (the dot
+    in `.agents` becomes a dash too), not just slashes. Renaming relied on this —
+    a bare slash substitution strands the transcript."""
+    session = env["session"]
+    monkeypatch.setattr(session, "PROJECTS_DIR", "/P")
+    assert session.project_dir("/Users/mek/.agents/ada-1581") == \
+        "/P/-Users-mek--agents-ada-1581"
+    assert session.project_dir("/Users/mek/Projects/ada") == "/P/-Users-mek-Projects-ada"
+
+
 def test_rename_external_cwd_leaves_transcript(env, tmp_path, monkeypatch):
     """Renaming an agent whose cwd is a real project checkout moves its home and
     repoints the row, but leaves cwd (and so the Claude transcript) untouched —
     resume keeps working because the cwd slug didn't change."""
     cli, db, home, session = env["cli"], env["db"], env["home"], env["session"]
-    proj = tmp_path / "projects"
-    monkeypatch.setattr(session, "PROJECTS_DIR", str(proj))
+    monkeypatch.setattr(session, "PROJECTS_DIR", str(tmp_path / "projects"))
     db.register("saul", role="Solr", cwd="/Projects/ada", session_id="sid-1")
     home.ensure_home("saul", cwd="/Projects/ada")
     home.write_session_id("saul", "sid-1")
-    slug = proj / "-Projects-ada"
-    slug.mkdir(parents=True)
-    (slug / "sid-1.jsonl").write_text("{}")
+    slug = session.project_dir("/Projects/ada")
+    os.makedirs(slug)
+    open(os.path.join(slug, "sid-1.jsonl"), "w").write("{}")
     _not_running(env, monkeypatch)
 
     a = cli.build_parser().parse_args(["rename", "saul", "sol"])
@@ -622,23 +632,23 @@ def test_rename_external_cwd_leaves_transcript(env, tmp_path, monkeypatch):
     assert db.get("sol")["cwd"] == "/Projects/ada"          # cwd unchanged
     assert os.path.isdir(home.home_dir("sol"))
     assert not os.path.isdir(home.home_dir("saul"))
-    assert (slug / "sid-1.jsonl").exists()                  # transcript stayed put
+    assert os.path.exists(os.path.join(slug, "sid-1.jsonl"))  # transcript stayed put
 
 
 def test_rename_home_cwd_moves_transcript(env, tmp_path, monkeypatch):
     """Renaming a default-cwd agent (cwd == home dir) moves the home AND the Claude
     transcript to the new cwd slug, and rewrites cwd — otherwise `claude --resume`
-    would look in the wrong, empty project dir."""
+    would look in the wrong, empty project dir. The home dir path has a dot
+    (`.agents`-style) via a dotted state dir, exercising the real slug rule."""
     cli, db, home, session = env["cli"], env["db"], env["home"], env["session"]
-    proj = tmp_path / "projects"
-    monkeypatch.setattr(session, "PROJECTS_DIR", str(proj))
+    monkeypatch.setattr(session, "PROJECTS_DIR", str(tmp_path / "projects"))
     db.register("ada", session_id="sid-9")      # no cwd -> defaults to home dir
     home.ensure_home("ada")
     home.write_session_id("ada", "sid-9")
     old_home = home.home_dir("ada")
-    old_slug = proj / old_home.replace("/", "-")
-    old_slug.mkdir(parents=True)
-    (old_slug / "sid-9.jsonl").write_text("{}")
+    old_slug = session.project_dir(old_home)
+    os.makedirs(old_slug)
+    open(os.path.join(old_slug, "sid-9.jsonl"), "w").write("{}")
     _not_running(env, monkeypatch)
 
     a = cli.build_parser().parse_args(["rename", "ada", "ada-lead"])
@@ -646,9 +656,9 @@ def test_rename_home_cwd_moves_transcript(env, tmp_path, monkeypatch):
     new_home = home.home_dir("ada-lead")
     assert db.get("ada-lead")["cwd"] == new_home            # cwd follows the home
     assert home.agent_cwd("ada-lead") == new_home           # home/cwd file too
-    new_slug = proj / new_home.replace("/", "-")
-    assert (new_slug / "sid-9.jsonl").exists()              # transcript moved
-    assert not old_slug.exists()                            # old slug cleaned up
+    new_slug = session.project_dir(new_home)
+    assert os.path.exists(os.path.join(new_slug, "sid-9.jsonl"))  # transcript moved
+    assert not os.path.isdir(old_slug)                     # old slug cleaned up
 
 
 def test_rename_repoints_reports(env, monkeypatch):

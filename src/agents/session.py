@@ -8,6 +8,7 @@ is what mis-binds agents in cmux (see the session-misattribution bug).
 
 import json
 import os
+import re
 import time
 
 SESSIONS_DIR = os.path.expanduser(
@@ -18,6 +19,16 @@ PROJECTS_DIR = os.path.expanduser(
 )
 
 
+def project_dir(cwd):
+    """The directory Claude stores a cwd's transcripts under. Claude derives it by
+    replacing *every* non-alphanumeric character in the absolute cwd with '-' (so
+    `/Users/mek/.agents/x` → `-Users-mek--agents-x` — the dot becomes a dash too,
+    not just the slashes), without collapsing runs. Anything keying on the project
+    dir (resume lookup, moving a transcript on rename) must use this, not a bare
+    slash substitution."""
+    return os.path.join(PROJECTS_DIR, re.sub(r"[^A-Za-z0-9]", "-", cwd))
+
+
 def transcript_exists(session_id, cwd=None):
     """True if a resumable transcript (<sessionId>.jsonl) exists for this id.
 
@@ -26,10 +37,8 @@ def transcript_exists(session_id, cwd=None):
     then any project dir.
     """
     import glob
-    if cwd:
-        proj = os.path.join(PROJECTS_DIR, cwd.replace("/", "-"))
-        if os.path.exists(os.path.join(proj, f"{session_id}.jsonl")):
-            return True
+    if cwd and os.path.exists(os.path.join(project_dir(cwd), f"{session_id}.jsonl")):
+        return True
     return bool(glob.glob(os.path.join(PROJECTS_DIR, "*", f"{session_id}.jsonl")))
 
 
