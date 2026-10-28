@@ -54,10 +54,11 @@ agents up pam                 # start in tmux (detached); resumes if already bou
 agents up --group web         # bring up every agent in the 'web' group
 agents up ada --host foreground   # or run attached to this terminal
 agents attach pam             # attach to its tmux window (Ctrl-b d to detach)
-agents send pam "status?"     # pipe a message into the running session
+agents send pam "status?"     # message a registered agent
+agents send -s <session> "hi" # …or any live session by id (no registry needed)
 agents whoami                 # who am I? — an agent identifies itself (--json too)
 agents find pam               # search past sessions to resume or adopt
-agents ls                     # registered agents + status light (● up/down)
+agents ls                     # every active session (named or not) + titles
 agents down pam               # stop it   (agents down --group web  stops the group)
 agents rm pam                 # remove (archive): hidden from ls, kept (ls -a shows it)
 agents configure              # permission mode, default host, tmux, tab-completion
@@ -71,10 +72,12 @@ workspace is pre-trusted so `up` can start them unattended. `agents configure`
 install tmux; `--mode bypassPermissions` is the explicit, un-gated opt-in.
 
 `up` and `down` take an agent name or the `--group <group>` / `--type <type>`
-selectors (short: `-g` / `-t`). `ls` shows a status light — **green** up,
-**orange** down, **red** archived — hides archived agents unless you pass
-`-a`/`--all`, and filters by `--group`/`--type`/`--running`/`--down`/`--archived`.
-`attach`/`detach` take a name or `--group`. Hosts:
+selectors (short: `-g` / `-t`). `ls` lists your registered agents **and** every
+live Claude session that isn't one (anything `up` is addressable via `send -s`),
+with a status light — **green** up, **orange** down, **red** archived — and a
+TITLE column; it hides archived agents unless you pass `-a`/`--all`, and filters
+by `--group`/`--type`/`--running`/`--down`/`--archived` (which also drop the
+unregistered sessions). `attach`/`detach` take a name or `--group`. Hosts:
 `tmux` (default), `herdr`, `foreground` (`--host`). Short aliases: `list` (`ls`),
 `attach` (`a`), `detach` (`d`). An unknown command is rejected (it never becomes
 an agent name), so `agents list` and `agents up --help` can't register junk agents.

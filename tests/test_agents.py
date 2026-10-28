@@ -21,6 +21,9 @@ def env(tmp_path, monkeypatch):
     for d in (state, sessions, socks):
         d.mkdir()
     monkeypatch.setenv("AGENTS_STATE_DIR", str(state))
+    # isolate history too (ls now reads it for titles) — nonexistent = empty
+    monkeypatch.setenv("CLAUDE_HISTORY", str(tmp_path / "history.jsonl"))
+    monkeypatch.setenv("CLAUDE_PROJECTS_DIR", str(tmp_path / "projects"))
 
     from agents import db, home, session
     from agents import transport as native
@@ -116,6 +119,7 @@ def test_send_resolves_via_db_session(env):
         env["db"].set_session("lenny", "sid-send")
         rc = env["cli"].cmd_send(type("A", (), {"name": "lenny",
                                                  "message": ["hi lenny"],
+                                                 "session": None,
                                                  "sender": None})())
         assert rc == 0
         assert wait_for(lambda: len(srv.lines) >= 2)
@@ -204,7 +208,7 @@ def test_send_from_flag_sets_attribution(env):
         env["db"].register("lenny", cwd="/tmp/x")
         env["db"].set_session("lenny", "sid-from")
         env["cli"].cmd_send(type("A", (), {
-            "name": "lenny", "message": ["hi"], "sender": "mek"})())
+            "name": "lenny", "message": ["hi"], "session": None, "sender": "mek"})())
         assert wait_for(lambda: len(srv.lines) >= 2)
         assert srv.lines[1]["from"] == "mek"
     finally:
@@ -455,3 +459,33 @@ def test_invalid_command_prints_help_not_choices(capsys):
     assert e.value.code == 2
     err = capsys.readouterr().err
     assert "usage: agents" in err and "_complete" not in err
+
+
+def test_ls_shows_unregistered_live_sessions(env, monkeypatch, capsys):
+    from agents import history
+    env["db"].register("pam")  # registered, no live session -> down
+    monkeypatch.setattr(env["native"], "list_sessions",
+                        lambda *a, **k: [{"sessionId": "live-unreg-1", "cwd": "/x/proj",
+                                          "name": "stray"}])
+    monkeypatch.setattr(history, "find_sessions",
+                        lambda *a, **k: [{"session_id": "live-unreg-1", "title": "a stray task"}])
+    a = env["cli"].build_parser().parse_args(["ls"])
+    assert a.func(a) == 0
+    out = capsys.readouterr().out
+    assert "pam" in out and "down" in out              # registered agent still shown
+    assert "stray" in out and "live-unr" in out and "a stray task" in out  # unregistered up
+
+
+def test_send_by_session_id(env, monkeypatch, capsys):
+    sent = {}
+    monkeypatch.setattr(env["native"], "send",
+                        lambda sid, msg, sender=None: sent.update(sid=sid, msg=msg))
+    a = env["cli"].build_parser().parse_args(["send", "-s", "sess-xyz", "hello", "world"])
+    assert a.func(a) == 0
+    assert sent["sid"] == "sess-xyz" and sent["msg"] == "hello world"
+    assert "delivered to 'sess-xyz'" in capsys.readouterr().out
+
+
+def test_send_requires_a_target(env):
+    a = env["cli"].build_parser().parse_args(["send"])  # no name, no -s
+    assert a.func(a) == 1

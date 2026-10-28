@@ -268,36 +268,57 @@ def _dot(status):
     return f"\033[{code}m●\033[0m" if sys.stdout.isatty() else "●"
 
 
+def _clip(s, n):
+    s = " ".join((s or "").split())
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
 def cmd_ls(args):
-    # Archived agents are hidden unless asked for (-a / --archived).
+    """List agents and every active session. Registered agents (any status) plus
+    live Claude sessions that aren't registered — because anything that's `up` is
+    addressable (`send -s <id>`). The TITLE column is the session's AI title (or a
+    registered agent's task). Narrowing to a registered subset (-g/-t/--down/
+    --archived) drops the unregistered sessions, which have none of those."""
     show_archived = args.all or args.archived
     agents = db.select(group=args.group, agent_type=args.type,
                        include_archived=show_archived)
-    filtered = bool(args.group or args.type or args.running or args.down
-                    or args.archived)
-    live = {r.get("sessionId") for r in native.list_sessions()}
-    rows = []
+    live = {r.get("sessionId"): r for r in native.list_sessions()}
+    titles = {r["session_id"]: r["title"]
+              for r in history.find_sessions(include_gone=True)}
+    narrowed = bool(args.group or args.type or args.down or args.archived)
+
+    rows = []  # (status, name, type, group, sid, title)
+    bound = set()
     for a in agents:
-        if a.get("archived"):
-            status = "archived"
-        else:
-            status = "up" if a.get("session_id") in live else "down"
+        sid = a.get("session_id")
+        bound.add(sid)
+        status = ("archived" if a.get("archived")
+                  else "up" if sid in live else "down")
         if args.running and status != "up":
             continue
         if args.down and status != "down":
             continue
         if args.archived and status != "archived":
             continue
-        rows.append((a, status))
+        title = titles.get(sid) or (home.initial_prompt(a["name"]) or "")
+        rows.append((status, a["name"], a.get("type") or "",
+                     a.get("workspace") or "", sid or "", title))
+
+    if not narrowed:  # append live sessions that aren't a registered agent
+        for sid, rec in live.items():
+            if sid in bound:
+                continue
+            title = titles.get(sid) or os.path.basename((rec.get("cwd") or "").rstrip("/"))
+            rows.append(("up", rec.get("name") or "—", "", "", sid or "", title))
+
     if not rows:
-        print("agents: no agents match" if filtered else "agents: none registered")
+        print("agents: no agents match" if (narrowed or args.running)
+              else "agents: none registered")
         return 0
-    print(f"  {'NAME':<16} {'TYPE':<8} {'STATUS':<9} {'GROUP':<12} {'SESSION':<10} ROLE")
-    for a, status in rows:
-        sid = (a.get("session_id") or "")[:8]
-        print(f"{_dot(status)} {a['name']:<16} {(a.get('type') or ''):<8} "
-              f"{status:<9} {(a.get('workspace') or ''):<12} {sid:<10} "
-              f"{a.get('role') or ''}")
+    print(f"  {'NAME':<16} {'TYPE':<7} {'STATUS':<9} {'GROUP':<10} {'SESSION':<9} TITLE")
+    for status, name, typ, group, sid, title in rows:
+        print(f"{_dot(status)} {name:<16} {typ:<7} {status:<9} {group:<10} "
+              f"{sid[:8]:<9} {_clip(title, 42)}")
     return 0
 
 
@@ -350,16 +371,26 @@ def _sender(explicit):
 
 
 def cmd_send(args):
-    reg = db.get(args.name)
-    sid = (reg or {}).get("session_id") or home.read_session_id(args.name)
-    if not sid:
-        return _err(f"'{args.name}' has no bound session")
+    parts = args.message
+    if args.session:  # target a live session id directly; the name slot is message
+        sid, target = args.session, args.session[:8]
+        parts = ([args.name] if args.name else []) + args.message
+    elif args.name:
+        reg = db.get(args.name)
+        sid = (reg or {}).get("session_id") or home.read_session_id(args.name)
+        target = args.name
+        if not sid:
+            return _err(f"'{args.name}' has no bound session")
+    else:
+        return _err("specify an agent name or -s <session_id>")
+    if not parts:
+        return _err("nothing to send")
     sender = _sender(args.sender)
     try:
-        native.send(sid, " ".join(args.message), sender=sender)
+        native.send(sid, " ".join(parts), sender=sender)
     except (native.SessionNotFound, native.DeliveryError) as e:
         return _err(str(e))
-    print(f"agents: delivered to '{args.name}'")
+    print(f"agents: delivered to '{target}'")
     return 0
 
 
@@ -814,9 +845,11 @@ def build_parser():
     s.add_argument("--json", action="store_true", help="JSONL output")
     s.set_defaults(func=cmd_find)
 
-    s = sub.add_parser("send", help="deliver a message to an agent")
-    s.add_argument("name")
-    s.add_argument("message", nargs="+")
+    s = sub.add_parser("send", help="deliver a message to an agent or live session")
+    s.add_argument("name", nargs="?")
+    s.add_argument("message", nargs="*")
+    s.add_argument("-s", "--session",
+                   help="target a live session id directly (no registry lookup)")
     s.add_argument("--from", dest="sender",
                    help="sender name shown to the receiver "
                         "(default: $AGENTS_AGENT_NAME or your OS login)")

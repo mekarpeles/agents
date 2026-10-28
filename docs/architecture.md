@@ -103,11 +103,14 @@ the pid resolved from the sessionId, and the window/pane closes when claude exit
 | **Communicate** | `send` | a running agent's socket |
 | **Operate** | `up`, `down`, `attach`, `detach` | the live process |
 
-`ls` and `find` are both reads but on different objects: `ls` lists agents you
-manage; `find` searches every Claude session on the machine so you can adopt one
+`ls` lists agents you manage **and** every live session that isn't one — it joins
+the registry, the live sockets (`transport.list_sessions`), and history titles, so
+anything `up` is visible and addressable (`send -s <id>`). `find` searches every
+Claude session on the machine (live or not) so you can adopt one
 (`register --session-id`). `up` and `down` take the `name | --group | --type`
 selector; `ls` filters by `--group`/`--type` and by status (`--running`/`--down`/
-`--archived`, with archived hidden unless `-a`) and prints a colored status light.
+`--archived`, archived hidden unless `-a`; those filters also drop the unregistered
+sessions) and prints a colored status light.
 
 ## Launch mode & trust
 
