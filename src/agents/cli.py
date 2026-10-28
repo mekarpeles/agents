@@ -891,6 +891,25 @@ def cmd_migrate(args):
     return 0
 
 
+def _clone_version(clone_dir, branch=None):
+    """A human label for the version a clone landed on — the pyproject version plus
+    the short commit, e.g. '0.1.0 (fc295fe)' (prefixed with the branch for
+    `--testing`). Falls back to whatever is available (sha alone, or 'latest')."""
+    r = subprocess.run(["git", "-C", clone_dir, "rev-parse", "--short", "HEAD"],
+                       capture_output=True, text=True)
+    sha = (r.stdout or "").strip() if r.returncode == 0 else ""
+    pyver = ""
+    try:
+        import re
+        m = re.search(r'(?m)^\s*version\s*=\s*"([^"]+)"',
+                      open(os.path.join(clone_dir, "pyproject.toml")).read())
+        pyver = m.group(1) if m else ""
+    except OSError:
+        pass
+    label = " ".join(p for p in (pyver, f"({sha})" if sha else "") if p) or "latest"
+    return f"{branch} {label}" if branch else label
+
+
 def cmd_upgrade(args):
     """Upgrade the agents CLI from GitHub (clone + pipx reinstall).
 
@@ -901,30 +920,34 @@ def cmd_upgrade(args):
     """
     import tempfile
     tmp = tempfile.mkdtemp()
+    clonedir = os.path.join(tmp, "agents")
     clone = ["git", "clone", "--depth=1"]
     if args.branch:
         clone += ["--branch", args.branch]
-    clone += ["https://github.com/mekarpeles/agents.git", os.path.join(tmp, "agents")]
-    print(f"agents: cloning {f'branch {args.branch!r}' if args.branch else 'latest'}…")
+    clone += ["https://github.com/mekarpeles/agents.git", clonedir]
     r = subprocess.run(clone, capture_output=True, text=True)
     if r.returncode != 0:
         shutil.rmtree(tmp, ignore_errors=True)
-        return _err(f"clone failed — {r.stderr.strip()}")
+        return _err(f"clone failed — {(r.stderr or '').strip()}")
+    ver = _clone_version(clonedir, args.branch)
     if args.branch:
         print(f"agents: ⚠ installing from {args.branch!r}, not the stable release — "
               f"run `agents upgrade` (no flags) to return to main.")
-    print("agents: upgrading via pipx…")
+    print(f"agents: pulling {ver} and upgrading via pipx into venv 'agents'…")
     # uv-backed pipx refuses to overwrite an existing venv without UV_VENV_CLEAR,
-    # and may serve a stale cached build without UV_NO_CACHE.
+    # and may serve a stale cached build without UV_NO_CACHE. Capture pipx's own
+    # chatter so the line above is the whole story; surface it only on failure.
     env = dict(os.environ, UV_VENV_CLEAR="1", UV_NO_CACHE="1")
-    r2 = subprocess.run(["pipx", "install", "--force", os.path.join(tmp, "agents")],
-                        env=env)
+    r2 = subprocess.run(["pipx", "install", "--force", clonedir], env=env,
+                        capture_output=True, text=True)
     shutil.rmtree(tmp, ignore_errors=True)
     if r2.returncode != 0:
-        return _err("upgrade failed. If pipx uses uv, run:\n"
+        detail = ((r2.stderr or "") + (r2.stdout or "")).strip()
+        return _err("upgrade failed" + (f":\n{detail}" if detail else "") +
+                    "\nIf pipx uses uv, run:\n"
                     "  UV_VENV_CLEAR=1 UV_NO_CACHE=1 pipx install --force "
                     "git+https://github.com/mekarpeles/agents.git")
-    print("agents: upgraded.")
+    print(f"agents: upgraded to {ver}.")
     return 0
 
 

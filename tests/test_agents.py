@@ -759,11 +759,11 @@ def test_find_command_no_matches(env, monkeypatch, capsys):
     assert "no matching sessions" in capsys.readouterr().out
 
 
-def test_upgrade_clone_and_pipx(monkeypatch):
+def test_upgrade_clone_and_pipx(monkeypatch, capsys):
     from agents import cli
     calls = []
     class R:
-        def __init__(self): self.returncode = 0; self.stderr = ""
+        def __init__(self): self.returncode = 0; self.stderr = ""; self.stdout = "0.1.0 abc1234"
     monkeypatch.setattr("tempfile.mkdtemp", lambda: "/tmp/agents-up-test")
     monkeypatch.setattr(cli.subprocess, "run", lambda cmd, **k: calls.append(cmd) or R())
     monkeypatch.setattr(cli.shutil, "rmtree", lambda *a, **k: None)
@@ -772,13 +772,17 @@ def test_upgrade_clone_and_pipx(monkeypatch):
     clone = next(c for c in calls if c[:2] == ["git", "clone"])
     assert "--branch" not in clone  # plain upgrade = main
     assert any(c[0] == "pipx" and "install" in c and "--force" in c for c in calls)
+    # consolidated message names the version + the venv, replacing pipx's chatter
+    out = capsys.readouterr().out
+    assert "upgrading via pipx into venv 'agents'" in out
+    assert "pulling" in out and "upgraded to" in out
 
 
-def test_upgrade_testing_branch(monkeypatch):
+def test_upgrade_testing_branch(monkeypatch, capsys):
     from agents import cli
     calls = []
     class R:
-        def __init__(self): self.returncode = 0; self.stderr = ""
+        def __init__(self): self.returncode = 0; self.stderr = ""; self.stdout = "abc1234"
     monkeypatch.setattr("tempfile.mkdtemp", lambda: "/tmp/agents-up-test2")
     monkeypatch.setattr(cli.subprocess, "run", lambda cmd, **k: calls.append(cmd) or R())
     monkeypatch.setattr(cli.shutil, "rmtree", lambda *a, **k: None)
@@ -786,6 +790,8 @@ def test_upgrade_testing_branch(monkeypatch):
     assert a.func(a) == 0
     clone = next(c for c in calls if c[:2] == ["git", "clone"])
     assert "--branch" in clone and "fix-1" in clone
+    out = capsys.readouterr().out
+    assert "fix-1" in out and "not the stable release" in out   # branch warning + label
 
 
 def test_invalid_command_prints_help_not_choices(capsys):
