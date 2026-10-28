@@ -227,6 +227,9 @@ class _StubHost:
         self.started.append((agent, group))
         return hosts.Launched(pid=None, proc=None)  # detached, no binding
 
+    def has_window(self, agent, group=None):
+        return False
+
 
 def test_up_group_fans_out(env, monkeypatch):
     env["db"].register("a1", workspace="team")
@@ -390,6 +393,47 @@ def test_attach_and_detach_unsupported_on_foreground(env):
     assert a.func(a) == 1   # foreground can't attach
     a = p.parse_args(["detach", "solo", "--host", "foreground"])
     assert a.func(a) == 1
+
+
+def test_attach_promotes_live_nontmux_session(env, monkeypatch):
+    """An agent that is up but not in tmux (foreground/adopted) is moved into a
+    tmux window so it can be attached — SIGTERM the process, resume in tmux."""
+    cli, native = env["cli"], env["native"]
+    env["db"].register("ada", cwd="/w/ada", session_id="sid-live")
+    env["home"].ensure_home("ada", cwd="/w/ada")
+    env["home"].write_session_id("ada", "sid-live")
+
+    calls = {"n": 0}
+    def fake_resolve(sid):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"pid": 999}          # first look: live, outside tmux
+        raise native.SessionNotFound(sid)  # after SIGTERM: gone
+    monkeypatch.setattr(native, "resolve", fake_resolve)
+    killed = []
+    monkeypatch.setattr(cli.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+
+    host = _StubHost()                   # name == "stub"; start() records
+    rc = cli._promote_to_tmux("ada", host, None)
+    assert rc == 0
+    assert killed == [(999, 15)]         # SIGTERM'd the foreground process
+    assert host.started and host.started[0][0] == "ada"  # resumed under the host
+
+
+def test_attach_will_not_kill_live_agent_without_consent(env, monkeypatch):
+    """A live, out-of-tmux agent is not restarted on a bare `attach`: with no tty
+    to confirm, attach refuses rather than interrupting possible mid-task work."""
+    cli, native = env["cli"], env["native"]
+    env["db"].register("busy", cwd="/w/busy", session_id="sid-x")
+    env["home"].ensure_home("busy", cwd="/w/busy")
+    env["home"].write_session_id("busy", "sid-x")
+    monkeypatch.setattr(native, "resolve", lambda sid: {"pid": 123})  # always live
+    killed = []
+    monkeypatch.setattr(cli.os, "kill", lambda *a: killed.append(a))
+
+    a = cli.build_parser().parse_args(["attach", "busy"])
+    assert a.func(a) == 1          # refused (no tty -> default No)
+    assert killed == []            # the process was left alone
 
 
 def test_find_command_table_and_json(env, monkeypatch, capsys):

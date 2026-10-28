@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 from agents import (config, db, history, home, hosts, session, trust,
                     transport as native)
@@ -154,8 +155,10 @@ def _up_one(name, host, prompt=None, cwd=None, identity=None, inject=True):
         try:
             rec = native.resolve(resume_id)
             return _err(f"'{name}' is already running (session {resume_id[:8]}, "
-                        f"pid {rec.get('pid')}). Use `agents send {name} ...`, "
-                        f"`agents attach {name}`, or `agents down {name}` first.")
+                        f"pid {rec.get('pid')}). Use `agents attach {name}` to open "
+                        f"it (moved into tmux if it isn't already), "
+                        f"`agents send {name} ...` to message it, or "
+                        f"`agents down {name}` to stop it.")
         except native.SessionNotFound:
             pass  # not running — resume if there's a transcript
         if not session.transcript_exists(resume_id, acwd):
@@ -300,7 +303,83 @@ def _attach_detach(args, op):
     return 0
 
 
+def _is_running(sid):
+    """True if a live session currently answers for `sid`."""
+    try:
+        native.resolve(sid)
+        return True
+    except native.SessionNotFound:
+        return False
+
+
+def _await_stopped(sid, timeout=4.0):
+    """Wait until no live session answers for `sid` (its socket is gone)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            native.resolve(sid)
+        except native.SessionNotFound:
+            return True
+        time.sleep(0.1)
+    try:
+        native.resolve(sid)
+        return False
+    except native.SessionNotFound:
+        return True
+
+
+def _promote_to_tmux(name, host, group):
+    """Make a live-but-not-tmux agent attachable: stop its current process and
+    resume the same session inside a tmux window. Lossless — we hold the
+    sessionId, so `up --resume` reattaches the exact transcript. You cannot bind a
+    second terminal to an already-running foreground process, so moving it is the
+    honest way to keep the 'up ⇒ attachable' invariant."""
+    sid, _ = _resolve_target(name)
+    if sid:
+        try:
+            rec = native.resolve(sid)
+        except native.SessionNotFound:
+            rec = None
+        if rec and rec.get("pid"):
+            print(f"agents: '{name}' is running outside tmux (pid {rec['pid']}); "
+                  f"moving it into a tmux window (resuming {sid[:8]})…")
+            try:
+                os.kill(rec["pid"], 15)  # SIGTERM; the session resumes from disk
+            except ProcessLookupError:
+                pass
+            if not _await_stopped(sid):
+                return _err(f"'{name}' did not stop in time — run `agents down "
+                            f"{name}` then `agents attach {name}`.")
+    return _up_one(name, host, inject=False)  # (adopt+)resume detached in tmux
+
+
 def cmd_attach(args):
+    host = _host(args)
+    err = _one_target(args)
+    if err:
+        return _err(err)
+    group = args.group or (db.get(args.name) or {}).get("workspace")
+    # Already attachable (a group session, or an existing tmux window), or a host
+    # that manages its own panes (herdr/foreground) — defer to the host's attach.
+    if host.name != "tmux" or args.group or host.has_window(args.name, group=group):
+        return _attach_detach(args, "attach")
+    # Up but not in tmux (foreground/adopted): attaching means restarting it in a
+    # tmux window. That interrupts it, so if it's live we confirm first (--force
+    # skips the prompt) — a mid-task agent shouldn't be killed on a stray attach.
+    sid, _ = _resolve_target(args.name)
+    live = sid and _is_running(sid)
+    if live and not getattr(args, "force", False):
+        if not _prompt_yes_no(
+                f"'{args.name}' is running outside tmux; attaching restarts it "
+                f"(resumed from its session). Interrupt and move it into tmux?",
+                default=False):
+            return _err(f"left '{args.name}' running — `agents send {args.name} "
+                        f"...` to message it without interrupting, or "
+                        f"`agents attach --force {args.name}` to move it anyway.")
+    rc = _promote_to_tmux(args.name, host, group)
+    if rc != 0:
+        return rc
+    time.sleep(0.3)  # let the new pane register before we hand off to tmux
     return _attach_detach(args, "attach")
 
 
@@ -866,6 +945,8 @@ def build_parser():
     s = sub.add_parser("attach", aliases=["a"], help="attach to an agent or group")
     s.add_argument("name", nargs="?")
     s.add_argument("-g", "--group", help="attach to this group's session")
+    s.add_argument("-f", "--force", action="store_true",
+                   help="if it's running outside tmux, move it there without asking")
     s.add_argument("--host", choices=hosts.CHOICES, default=None,
                    help="pty host (default: the configured host, tmux)")
     s.set_defaults(func=cmd_attach)

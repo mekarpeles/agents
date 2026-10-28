@@ -41,6 +41,9 @@ class Host:
     def start(self, agent, cmd, cwd, env, group=None) -> Launched:
         raise NotImplementedError
 
+    def has_window(self, agent, group=None) -> bool:
+        return False  # only a pty host with panes (tmux) can be attached
+
     def attach(self, agent, group=None):
         raise Unsupported(f"{self.name}: attach not supported")
 
@@ -102,8 +105,22 @@ class Tmux(Host):
         out = r.stdout.split()
         return int(out[0]) if out else None
 
+    def has_window(self, agent, group=None):
+        sess = group if agent is None else self._session(agent, group)
+        return subprocess.run(["tmux", "has-session", "-t", sess],
+                              capture_output=True).returncode == 0
+
     def attach(self, agent, group=None):
         target = group if agent is None else self._target(agent, group)
+        # Guard so tmux's raw "can't find session: <sess>" never leaks — an agent
+        # bound to a live session that runs *outside* tmux (foreground/adopted)
+        # has no pane to attach to, and that's the common cause.
+        if not self.has_window(agent, group):
+            who = f"group '{group}'" if agent is None else f"'{agent}'"
+            raise RuntimeError(
+                f"no tmux window for {who} — it isn't running under tmux. "
+                f"a session running foreground/adopted has its own terminal and "
+                f"can't be attached (use `agents send` to message it).")
         os.execvp("tmux", ["tmux", "attach", "-t", target])
 
     def detach(self, agent, group=None):

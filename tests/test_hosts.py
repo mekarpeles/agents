@@ -60,3 +60,12 @@ def test_tmux_start_creates_window(tmp_path, monkeypatch):
         t.detach("t1", group="grp")  # no client attached -> no-op, must not raise
     finally:
         subprocess.run(["tmux", "kill-server"], capture_output=True)
+
+
+@pytest.mark.skipif(not shutil.which("tmux"), reason="tmux not installed")
+def test_tmux_attach_missing_session_is_clear(tmp_path, monkeypatch):
+    # No tmux window for this agent -> a clear error, never execvp into tmux's
+    # raw "can't find session" leak.
+    monkeypatch.setenv("TMUX_TMPDIR", str(tmp_path))
+    with pytest.raises(RuntimeError, match="isn't running under tmux"):
+        hosts.Tmux().attach("ghost")
