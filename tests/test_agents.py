@@ -376,6 +376,21 @@ def test_rm_keeps_home(env):
     assert os.path.isdir(h)  # home preserved
 
 
+def test_status_glyphs_are_shape_distinct(env):
+    # colorblind-safe: up/down/archived differ by SHAPE, not just color
+    dot = env["cli"]._dot
+    assert dot("up") == "●" and dot("down") == "○" and dot("archived") == "✗"
+
+
+def test_send_from_defaults_to_calling_agent(env, monkeypatch):
+    # an agent's send with no --from attributes to its registered name, not the
+    # OS user (which would read as the human speaking)
+    env["db"].register("oliver", agent_type="lead", session_id="sid-oliver")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-oliver")
+    assert env["cli"]._sender(None) == "oliver"
+    assert env["cli"]._sender("github:bot") == "github:bot"   # explicit still wins
+
+
 def test_ls_status_filters(env, capsys):
     env["db"].register("pam")
     env["db"].register("ada")
@@ -498,11 +513,11 @@ def test_rm_archives_hides_and_restores(env, capsys):
     # default ls hides the removed (archived) agent
     a = p.parse_args(["ls"]); a.func(a)
     out = capsys.readouterr().out
-    assert "ada" in out and "down" in out and "pam" not in out
+    assert "ada" in out and "pam" not in out
 
-    # -a reveals it as archived; completion excludes it
+    # -a reveals it; archived shows as the ✗ glyph (no STATUS text column anymore)
     a = p.parse_args(["ls", "-a"]); a.func(a)
-    assert "pam" in (out2 := capsys.readouterr().out) and "archived" in out2
+    assert "pam" in (out2 := capsys.readouterr().out) and "✗" in out2
     a = p.parse_args(["_complete", "names"]); a.func(a)
     assert "pam" not in capsys.readouterr().out.split()
 
@@ -1004,7 +1019,7 @@ def test_ls_shows_unregistered_live_sessions(env, monkeypatch, capsys):
     a = env["cli"].build_parser().parse_args(["ls"])
     assert a.func(a) == 0
     out = capsys.readouterr().out
-    assert "pam" in out and "down" in out              # registered agent still shown
+    assert "pam" in out                                # registered agent still shown
     assert "stray" in out and "live-unr" in out and "a stray task" in out  # unregistered up
 
 
