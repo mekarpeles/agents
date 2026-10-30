@@ -435,7 +435,7 @@ def test_ls_team_tree_view(env, capsys):
     a = p.parse_args(["ls", "-t"])
     assert a.func(a) == 0
     out = capsys.readouterr().out
-    assert "GROUPS" in out and "DESC" in out                 # new column headers
+    assert "NAME" in out and "DESC" in out                   # header columns
     # reports nest under their lead with tree branches; loner is its own root
     assert "lead1" in out and "─ ada1" in out and "─ ada2" in out
     lead_line = next(l for l in out.splitlines() if "lead1" in l)
@@ -1304,22 +1304,29 @@ def test_checkin_without_agent_or_caller_errors(env, monkeypatch):
     assert a.func(a) == 1
 
 
-def test_fmt_meta_is_keyvals_with_lead_order_and_list_join(env):
-    f = env["cli"]._fmt_meta
-    assert f({}) == ""
-    # common keys lead (project, issue, pr, epics), then the rest; lists join on ','
-    assert f({"pr": "123", "project": "ol", "epics": [14200, 14300]}) == \
-        "project: ol  pr: 123  epics: 14200,14300"
+def test_detail_lines_stack_meta_and_groups_with_cap(env):
+    f = env["cli"]._detail_lines
+    assert f([], {}) == []
+    # common keys lead; lists bracketed; groups folded in as its own line
+    assert f(["solr", "tags"], {"pr": "123", "project": "ol", "epics": [1, 2]}) == \
+        ["project: ol", "pr: 123", "epics: [1, 2]", "groups: [solr, tags]"]
+    # with a cap, extras collapse into a '… +N more' line
+    capped = f(["solr"], {"project": "ol", "issue": "1", "pr": "2"}, limit=3)
+    assert capped == ["project: ol", "issue: 1", "pr: 2", "… +1 more"]
 
 
-def test_ls_meta_column_is_keyvals_not_json(env, capsys):
+def test_ls_stacks_meta_vertically_not_json(env, capsys):
     db, cli = env["db"], env["cli"]
-    db.register("w", agent_type="lead", meta={"project": "ol", "pr": "123"})
+    db.register("w", agent_type="lead", meta={"project": "ol", "pr": "123"},
+                workspace="solr")
     a = cli.build_parser().parse_args(["ls", "--flat"])
     assert a.func(a) == 0
-    out = capsys.readouterr().out
-    assert "project: ol" in out and "pr: 123" in out     # compact key: value pairs
-    assert "{" not in out and '"project"' not in out     # not JSON
+    lines = capsys.readouterr().out.splitlines()
+    # each fact is its own stacked line beneath the agent, not a JSON blob
+    assert any(l.strip() == "project: ol" for l in lines)
+    assert any(l.strip() == "pr: 123" for l in lines)
+    assert any(l.strip() == "groups: [solr]" for l in lines)
+    assert "{" not in "\n".join(lines) and "GROUPS" not in "\n".join(lines)
 
 
 def test_ls_desc_prefers_recap_over_role(env, capsys):

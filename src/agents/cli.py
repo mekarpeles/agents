@@ -813,25 +813,31 @@ def _clip(s, n):
 _ALL_TEAMS = "*"  # `ls -t` with no value: tree of every team
 
 # (field key, header, max width) in display order: NAME SESSION STATUS TYPE GROUPS DESC
-_LS_COLS = [("name", "NAME", 28), ("sid", "SESSION", 8), ("status", "STATUS", 8),
-            ("type", "TYPE", 6), ("groups", "GROUPS", 16), ("meta", "META", 30),
-            ("desc", "DESC", 40)]
+# The header line per agent; metadata + groups stack beneath it (see _detail_lines),
+# so the line stays narrow and never overflows the terminal.
+_HDR_COLS = [("name", "NAME", 30), ("sid", "SESSION", 8),
+             ("status", "STATUS", 8), ("type", "TYPE", 6)]
 
 _META_ORDER = ("project", "issue", "pr", "epics")   # the common keys lead
 
 
-def _fmt_meta(meta):
-    """Metadata as compact `key: value` pairs for the ls column (not JSON) —
-    e.g. 'project: ol  pr: 123  issue: 122'. Lists (epics) join on commas."""
-    if not meta:
-        return ""
+def _detail_lines(groups, meta, limit=None):
+    """An agent's metadata and groups as stacked `key: value` lines (one per line)
+    for the ls block — e.g. 'project: ol', 'epics: [13923, 13924]', 'groups:
+    [solr, tags]'. Groups are folded in here as just another key. With `limit`, at
+    most that many are shown and the rest collapse into a '… +N more' line."""
+    out = []
     keys = ([k for k in _META_ORDER if k in meta]
             + sorted(k for k in meta if k not in _META_ORDER))
-    parts = []
     for k in keys:
         v = meta[k]
-        parts.append(f"{k}: {','.join(str(x) for x in v) if isinstance(v, list) else v}")
-    return "  ".join(parts)
+        out.append(f"{k}: [{', '.join(str(x) for x in v)}]" if isinstance(v, list)
+                   else f"{k}: {v}")
+    if groups:
+        out.append(f"groups: [{', '.join(groups)}]")
+    if limit is not None and len(out) > limit:
+        out = out[:limit] + [f"… +{len(out) - limit} more"]
+    return out
 
 
 def _trunc(s, n):
@@ -840,20 +846,29 @@ def _trunc(s, n):
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
-def _print_rows(rows):
-    """Print rows (each a dict with the _LS_COLS keys + 'status') as an aligned
-    table whose column widths fit the content, capped by _LS_COLS."""
+def _print_agents(rows):
+    """Print each agent as a header line (name/session/status/type + a
+    terminal-width-capped desc) with its metadata and groups stacked as `key:
+    value` lines indented beneath it, so nothing overflows the screen."""
     w = {}
-    for key, hdr, cap in _LS_COLS:
+    for key, hdr, cap in _HDR_COLS:
         w[key] = min(cap, max(len(hdr), *(len(str(r.get(key, ""))) for r in rows)))
-    print("  " + "  ".join(f"{hdr:<{w[key]}}" for key, hdr, _ in _LS_COLS).rstrip())
+    fixed = 2 + sum(w[k] for k, _, _ in _HDR_COLS) + 2 * len(_HDR_COLS)
+    total = shutil.get_terminal_size(fallback=(120, 40)).columns
+    desc_w = max(20, total - fixed - 2)
+    print(("  " + "  ".join(f"{hdr:<{w[key]}}" for key, hdr, _ in _HDR_COLS)
+           + f"  {'DESC':<{desc_w}}").rstrip())
     for r in rows:
-        cells = []
-        for key, _, _ in _LS_COLS:
-            val = (_trunc(r.get("name", ""), w["name"]) if key == "name"
-                   else _clip(str(r.get(key, "")), w[key]))
-            cells.append(f"{val:<{w[key]}}")
-        print(f"{_dot(r['status'])} " + "  ".join(cells).rstrip())
+        name = _trunc(r.get("name", ""), w["name"])
+        cells = [f"{name:<{w['name']}}"] + [
+            f"{_clip(str(r.get(key, '')), w[key]):<{w[key]}}"
+            for key, _, _ in _HDR_COLS[1:]]
+        desc = _clip(str(r.get("desc", "")), desc_w)
+        print((f"{_dot(r['status'])} " + "  ".join(cells) + "  " + desc).rstrip())
+        pad = "  " + " " * (r.get("name_indent", 0) + 2)   # under the name, +2
+        avail = max(10, total - len(pad))
+        for line in r.get("details", []):
+            print(pad + _clip(line, avail))
 
 
 def _tree_rows(entries):
@@ -872,11 +887,12 @@ def _tree_rows(entries):
 
     def walk(e, prefix, is_last, depth):
         if depth == 0:
-            cell, child_prefix = e["name"], ""
+            cell, child_prefix, indent = e["name"], "", 0
         else:
             cell = prefix + ("└─ " if is_last else "├─ ") + e["name"]
             child_prefix = prefix + ("   " if is_last else "│  ")
-        rows.append({**e, "name": cell})
+            indent = len(prefix) + 3   # columns before the name text (branch = 3)
+        rows.append({**e, "name": cell, "name_indent": indent})
         kids = sorted(children.get(e["name"], []), key=lambda x: x["name"])
         for i, k in enumerate(kids):
             walk(k, child_prefix, i == len(kids) - 1, depth + 1)
@@ -947,9 +963,9 @@ def cmd_ls(args):
         desc = (a.get("recap") or a.get("role")
                 or home.initial_prompt(a["name"]) or titles.get(sid) or "")
         entries.append({"status": status, "name": a["name"], "sid": (sid or "")[:8],
-                        "type": a.get("type") or "", "groups": ",".join(db.groups_of(a)),
-                        "meta": _fmt_meta(db.meta_of(a)),
-                        "desc": desc, "team": a.get("team") or ""})
+                        "type": a.get("type") or "", "desc": desc,
+                        "team": a.get("team") or "",
+                        "details": _detail_lines(db.groups_of(a), db.meta_of(a), limit=3)})
 
     # Also list live sessions that aren't registered agents (as tree roots, or
     # flat rows) — unless we're narrowing the registry, which they can't match.
@@ -964,14 +980,14 @@ def cmd_ls(args):
             desc = titles.get(sid) or os.path.basename((rec.get("cwd") or "").rstrip("/"))
             entries.append({"status": "archived" if archived else "up",
                             "name": rec.get("name") or "—",
-                            "sid": (sid or "")[:8], "type": "", "groups": "",
-                            "meta": "", "desc": desc, "team": ""})
+                            "sid": (sid or "")[:8], "type": "",
+                            "desc": desc, "team": "", "details": []})
 
     if not entries:
         print("agents: no agents match" if (narrowed or args.running)
               else "agents: none registered")
         return 0
-    _print_rows(_tree_rows(entries) if tree else entries)
+    _print_agents(_tree_rows(entries) if tree else entries)
     return 0
 
 
