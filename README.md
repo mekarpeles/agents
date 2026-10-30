@@ -88,12 +88,17 @@ registered agents **and** every live Claude session that isn't one. **Everything
 a session:** `up`, `down`, and `send` all take a live (or past) session's displayed
 name or id, not just a registered agent — `up <session>` resumes it (adopting it
 into the registry), `down`/`send` act on it (`send -s <id>` targets by id), and all
-three tab-complete those sessions. `ls` shows a status light — **green** up,
-**orange** down, **red** archived — with aligned `NAME SESSION STATUS TYPE GROUPS
-DESC` columns; `ls -t` switches to a **team tree** (reports nested under their
-lead). It hides archived agents unless you pass `-a`/`--all`, and filters by
-`--group`/`--type`/`-t <team>`/`--running`/`--down`/`--archived` (which also drop
-the unregistered sessions). `attach`/`detach` take a name or `--team`; attaching a
+three tab-complete those sessions. `ls` marks status by **shape** (readable
+without color): **●** up (green), **○** down (a hollow circle), **✗** archived —
+in aligned `NAME SESSION TYPE META DESC` columns, where **META** is a count of an
+agent's metadata fields and **DESC** is its latest check-in (recap), role, or
+task; `ls -t` switches to a **team tree** (reports nested under their lead).
+Metadata is collapsed by default — `agents ls --meta` expands every field stacked
+beneath each agent (tree bars intact), and `agents ls --meta <key>` (e.g. `--meta
+pr`) filters to matches and shows just that key inline. It hides archived agents
+unless you pass `-a`/`--all`, and filters by
+`--group`/`--type`/`-t <team>`/`--meta`/`--running`/`--down`/`--archived` (which
+also drop the unregistered sessions). `attach`/`detach` take a name or `--team`; attaching a
 live agent that's running *outside* tmux (foreground/adopted) restarts it in a tmux
 window, so it refuses unless you pass `-f`/`--force` (the same gate `rename` uses —
 `send` is the no-interrupt alternative). Hosts:
@@ -168,6 +173,34 @@ dc33a929-b44e-448f-b1d5-adaa9cbd2681  idle       698  Projects     PAM agent res
 `STATE` is `running` (a live process is attached), `idle` (resumable transcript
 on disk, no process), or `gone` (transcript cleaned up — shown only with
 `--all`). `--json` emits one object per line; `-n` caps the count.
+
+## Recipes (power commands)
+
+Useful one-liners. For any command's full flags and more examples, run `agents
+man <command>` (or `agents man` for the core concepts).
+
+| Goal | Command |
+|------|---------|
+| Agents whose prompt/work mentions a term | `agents find -a roni` — deep-greps transcripts (`agents find roni` is the quick title/prompt search) |
+| A recap of every agent that's **up** | `agents ls --running` — DESC shows each one's latest check-in |
+| Agents carrying **both** an issue and a PR | `agents ls --meta issue --meta pr` — shows `issue: … pr: …` inline |
+| Everyone on a project | `agents ls --meta project=ol` |
+| The agent that **owns PR N** | `agents ls --json --meta pr=<N>` — JSONL, one object per line |
+| All **archived** agents | `agents ls --archived` |
+| Each agent's **home dir** (and cwd) | `agents ls --json` → `.home` / `.cwd` per line (every registered agent has a home) |
+| A lead and its reports | `agents ls -t <lead>` |
+| **Expand** all metadata under each agent | `agents ls --meta` |
+| Agents in a group | `agents ls -g solr` |
+| One agent's **full record** (meta, recap history, home, session) | `agents more <name>` |
+| **Tail** an agent's transcript live | `agents session <name> -f` (or `--head`/`--tail -n N`) |
+| Resolve a teammate's **SendMessage** address | `agents whois <name>` |
+| Bring a **whole project up in herdr** | `agents up --meta project=ol --host herdr` |
+| Record where you are (as an agent) | `agents checkin "builder patched; tests green"` |
+| Set/read structured metadata | `agents meta set <name> pr=14212` · `agents meta get <name>` |
+| Back up / rebuild the registry | `agents snapshot` · `agents reindex` |
+
+Most selectors compose: `agents ls --running --meta project=ol -t saul` narrows to
+live Open-Library agents on Saul's team. Add `--json` to any `ls` for scripting.
 
 ## Shell completion
 
