@@ -796,13 +796,17 @@ def cmd_detach(args):
 
 
 # The status light: green = up, orange = down, red = archived.
-_STATUS_COLOR = {"up": "32", "down": "38;5;208", "archived": "31"}
+# Distinguished by SHAPE first, so it reads without color (colorblind-safe): a
+# filled green light for up, a hollow circle (just an outline over the terminal
+# background) for down, an ✗ for archived. Color is only an enhancement.
+_STATUS_GLYPH = {"up": ("●", "32"), "down": ("○", ""), "archived": ("✗", "2")}
 
 
 def _dot(status):
-    """A colored status light (plain '●' when stdout isn't a terminal)."""
-    code = _STATUS_COLOR.get(status, "0")
-    return f"\033[{code}m●\033[0m" if sys.stdout.isatty() else "●"
+    """The status glyph — ● up (green), ○ down (hollow), ✗ archived. The shape
+    carries the meaning; color is dropped when stdout isn't a terminal."""
+    glyph, code = _STATUS_GLYPH.get(status, ("○", ""))
+    return f"\033[{code}m{glyph}\033[0m" if code and sys.stdout.isatty() else glyph
 
 
 def _clip(s, n):
@@ -817,7 +821,7 @@ _ALL_TEAMS = "*"  # `ls -t` with no value: tree of every team
 # many metadata/group fields an agent has; `--meta` expands them (stacked beneath,
 # see _detail_lines) and `--meta <key>` surfaces that key's value inline here.
 _HDR_COLS = [("name", "NAME", 30), ("sid", "SESSION", 8),
-             ("status", "STATUS", 8), ("type", "TYPE", 6), ("meta", "META", 24)]
+             ("type", "TYPE", 6), ("meta", "META", 24)]
 
 _META_ORDER = ("project", "issue", "pr", "epics")   # the common keys lead
 
@@ -1058,13 +1062,18 @@ def cmd_find(args):
 
 
 def _sender(explicit):
-    """Resolve the 'from' attribution: --from, else $AGENTS_AGENT_NAME (set when
-    the caller is itself an agent), else the OS login name. Never the bare
-    'agents' — that reads like a peer agent and confuses the receiver.
+    """Resolve the 'from' attribution: --from, else the calling *agent's*
+    registered name (by $CLAUDE_CODE_SESSION_ID, like whoami), else
+    $AGENTS_AGENT_NAME, else the OS login name. Defaulting to the registered name
+    matters: without it an agent's send falls through to the OS user (e.g. 'mek'),
+    which reads as the human speaking rather than the agent.
     """
     import getpass
     if explicit:
         return explicit
+    caller = _caller_agent()
+    if caller:
+        return caller["name"]
     if os.environ.get("AGENTS_AGENT_NAME"):
         return os.environ["AGENTS_AGENT_NAME"]
     try:
