@@ -218,6 +218,7 @@ MANUALS = {
              "it with its age, and this shows the whole trail.",
         examples=[("agents recap dewey", "dewey's check-ins, newest first"),
                   ("agents recap dewey -n 5", "just the 5 most recent"),
+                  ("agents recap --all", "fleet digest: every agent with a recap"),
                   ("agents recap", "your own (from an agent session)")],
         see_also=["checkin", "more", "ls"],
     ),

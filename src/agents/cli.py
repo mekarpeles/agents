@@ -1195,7 +1195,24 @@ def cmd_checkin(args):
 def cmd_recap(args):
     """Show an agent's check-in history — the recap journal (its status over time),
     distinct from its description (purpose). Defaults to the calling agent; name
-    one, or `-n` to cap how many (newest first)."""
+    one, or `-n` to cap how many (newest first). `--all` is a fleet digest: every
+    agent that has a recap, its latest line, freshest check-in first."""
+    if args.all:
+        live = {r.get("sessionId") for r in native.list_sessions()}
+        rows = [a for a in db.all_agents() if a.get("recap")]
+        if not rows:
+            print("no agents have checked in yet")
+            return 0
+        rows.sort(key=lambda a: a.get("recap_at") or "", reverse=True)
+        total = shutil.get_terminal_size(fallback=(120, 40)).columns
+        for a in rows:
+            status = "up" if a.get("session_id") in live else "down"
+            age = _ago(a.get("recap_at"))
+            head = f"{a['name']}  "
+            tail = f"  ({age} ago)" if age else ""
+            avail = max(20, total - 2 - len(head) - len(tail))
+            print(f"{_dot(status)} {head}{_clip(a['recap'], avail)}{tail}")
+        return 0
     name = args.name
     if not name:
         reg = _caller_agent()
@@ -2150,6 +2167,8 @@ def build_parser():
     s = sub.add_parser("recap", help="show an agent's check-in history (recap journal)")
     s.add_argument("name", nargs="?", help="the agent (default: the calling agent)")
     s.add_argument("-n", "--lines", type=int, help="show only the most recent N")
+    s.add_argument("-a", "--all", action="store_true",
+                   help="fleet digest: every agent that has a recap, latest first")
     s.set_defaults(func=cmd_recap)
 
     s = sub.add_parser("more", help="show the full record for one agent")

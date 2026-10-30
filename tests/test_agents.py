@@ -1397,6 +1397,23 @@ def test_recap_shows_checkin_history_newest_first(env, capsys):
     assert "stepC" in out2 and "stepA" not in out2        # -n caps
 
 
+def test_recap_all_is_a_fleet_digest(env, capsys):
+    db, cli = env["db"], env["cli"]
+    db.register("dewey", agent_type="lead")
+    db.register("saul", agent_type="lead")
+    db.register("quiet", agent_type="ada")          # never checks in
+    a = cli.build_parser().parse_args(["checkin", "--agent", "saul", "solr reindexing"])
+    a.func(a)
+    a = cli.build_parser().parse_args(["checkin", "--agent", "dewey", "tags done"])
+    a.func(a)
+    capsys.readouterr()
+    a = cli.build_parser().parse_args(["recap", "--all"])
+    assert a.func(a) == 0
+    out = capsys.readouterr().out
+    assert "tags done" in out and "solr reindexing" in out   # agents with a recap
+    assert "quiet" not in out                                # excluded (no recap)
+
+
 def test_recap_no_checkins(env, capsys):
     env["db"].register("x", agent_type="ada")
     a = env["cli"].build_parser().parse_args(["recap", "x"])
