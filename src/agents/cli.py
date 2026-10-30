@@ -957,12 +957,14 @@ def cmd_ls(args):
                 continue
             if args.archived and status != "archived":
                 continue
+            hd = home.home_dir(a["name"])
             print(_json.dumps({
                 "name": a["name"], "type": a.get("type") or None,
                 "team": a.get("team") or None, "groups": db.groups_of(a),
                 "session_id": sid, "status": status,
-                "cwd": a.get("cwd"), "desc": a.get("role"),
-                "recap": a.get("recap"), "meta": db.meta_of(a),
+                "cwd": a.get("cwd"), "home": hd if os.path.isdir(hd) else None,
+                "desc": a.get("role"), "recap": a.get("recap"),
+                "meta": db.meta_of(a),
             }))
         return 0
 
@@ -1062,11 +1064,11 @@ def cmd_find(args):
 
 
 def _sender(explicit):
-    """Resolve the 'from' attribution: --from, else the calling *agent's*
-    registered name (by $CLAUDE_CODE_SESSION_ID, like whoami), else
-    $AGENTS_AGENT_NAME, else the OS login name. Defaulting to the registered name
-    matters: without it an agent's send falls through to the OS user (e.g. 'mek'),
-    which reads as the human speaking rather than the agent.
+    """The 'from' attribution: --from if given, else the calling *agent's*
+    registered name (by $CLAUDE_CODE_SESSION_ID, like whoami), else — for a human
+    terminal with no agent session — the OS user ($USER). Identity comes from the
+    session, never an env var: an agent self-attributes by its registered name, and
+    a person at a terminal sends as themselves.
     """
     import getpass
     if explicit:
@@ -1074,8 +1076,6 @@ def _sender(explicit):
     caller = _caller_agent()
     if caller:
         return caller["name"]
-    if os.environ.get("AGENTS_AGENT_NAME"):
-        return os.environ["AGENTS_AGENT_NAME"]
     try:
         return getpass.getuser()
     except Exception:
@@ -2107,7 +2107,7 @@ def build_parser():
                    help="target a live session id directly (no registry lookup)")
     s.add_argument("--from", dest="sender",
                    help="sender name shown to the receiver "
-                        "(default: $AGENTS_AGENT_NAME or your OS login)")
+                        "(default: your registered agent name, else your OS login)")
     s.set_defaults(func=cmd_send)
 
     s = sub.add_parser("whoami",

@@ -229,12 +229,11 @@ def test_no_command_is_not_required():
 
 def test_sender_resolution(env, monkeypatch):
     import getpass
-    monkeypatch.delenv("AGENTS_AGENT_NAME", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.setenv("AGENTS_AGENT_NAME", "ada")        # env is NOT an identity source
     assert env["cli"]._sender("mek") == "mek"             # explicit --from wins
-    monkeypatch.setenv("AGENTS_AGENT_NAME", "ada")
-    assert env["cli"]._sender(None) == "ada"              # then env
-    monkeypatch.delenv("AGENTS_AGENT_NAME", raising=False)
-    assert env["cli"]._sender(None) == getpass.getuser()  # never the bare "agents"
+    # a human terminal (no agent session) sends as the OS user, not the env var
+    assert env["cli"]._sender(None) == getpass.getuser()
 
 
 def test_send_from_flag_sets_attribution(env):
