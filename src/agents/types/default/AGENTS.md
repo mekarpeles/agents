@@ -16,8 +16,11 @@ home and working base. Claude Code loaded this file automatically on startup.
   in your session like a user turn. To message a teammate, resolve its address with
   `agents whois <name>` then SendMessage (`agents send <name>` always lands too).
 - `agents down <you>` stops you; `agents up <you>` resumes this same session.
-- Record where you are with `agents checkin "..."` (a timestamped one-line recap),
-  and learn any command with `agents man <command>`.
+- **Keep your recap current.** `agents checkin "..."` writes a one-line status
+  about yourself into the registry — *where you are now* — so your lead and the
+  operator see progress without interrupting you. Check in at milestones and before
+  you go idle. (It's distinct from your description, the one-time overview of your
+  role.) Learn any command with `agents man <command>`.
 
 ## Working on code
 

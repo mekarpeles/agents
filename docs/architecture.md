@@ -89,9 +89,11 @@ The registry row carries more than launch metadata:
   existence test, a value is stringified equality, and a *list*-valued key (epics)
   matches by membership. `project` lives here, not in a group; this is what resolves
   agent ↔ issue ↔ PR without encoding it in the name.
-- **`recap` / `recap_at`** — a one-line, agent-set status (`checkin`), stamped and
-  appended to `~/.agents/<name>/recap.log`. Opt-in and never computed, so it costs
-  no tokens; `ls`/`more` surface it.
+- **`recap` / `recap_at`** — a one-line status an agent writes about itself
+  (`checkin`), stamped and appended to `~/.agents/<name>/recap.log`. Agent-authored,
+  encouraged, and never computed (so it costs no tokens); `ls`/`more`/`recap`
+  surface it. Distinct from `role` (the description — *what* the agent is, set once):
+  the recap is the *changing status*, the role a static overview.
 - **Durability** — the whole table mirrors to `~/.agents/agents-snapshot.json`
   (`db.snapshot`, written atomically), refreshed lazily at most hourly on any
   command (`maybe_snapshot`). `db.reindex_from_snapshot` rebuilds the table from it.

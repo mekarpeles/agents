@@ -167,7 +167,7 @@ agents team add ada-7 payments-lead      # ada-7 now reports to that lead
 agents group add ada-7 web,search        # …and carries the web + search labels
 ```
 
-## Metadata & recap
+## Metadata
 
 Beyond team/group/type, each agent carries structured **metadata** — a small JSON
 object of queryable keys. The conventions: `project`, `issue`, `pr`, and (for
@@ -181,12 +181,25 @@ agents ls --meta                   # expand every field under each agent
 agents up --meta project=ol --host herdr   # selectors take --meta too
 ```
 
-A **recap** is a one-line, agent-set status ("where we are"), recorded with `agents
-checkin "…"`. It's timestamped and journaled (`~/.agents/<name>/recap.log`), and
-it's what `ls` shows in DESC (the *latest* line) and `agents more <name>` shows with
-its age. The **recap is distinct from the description** (`--desc`/role, which is
-*what the agent is*): `agents recap <name>` prints the full check-in history (newest
-first), `agents checkin "…"` adds to it.
+## Recap — check in where you are
+
+A **recap** is a one-line status an agent **writes about itself into the registry**
+— *where it is right now*. Agents are encouraged to keep it current: check in at
+each milestone and before going idle, so a lead or the operator can see progress
+**without interrupting the agent**.
+
+```bash
+agents checkin "2 of 3 commits done; tests green"   # the agent records its status
+agents recap <name>        # that agent's check-in history (newest first)
+agents recap --all         # fleet digest: every agent that has a recap, freshest first
+```
+
+It's agent-authored and never computed (so it costs no tokens), timestamped, and
+journaled to `~/.agents/<name>/recap.log`; the latest line lives in the registry
+row (`recap`/`recap_at`) so it shows in `ls` (DESC), `more`, `whoami`, and the
+snapshots. **A recap is distinct from the description** (`role`, set *once* with
+`register --desc` — *what the agent is*): the description is a static overview of
+the role, the recap is the changing status.
 
 ## Library
 
@@ -214,7 +227,7 @@ never drops cached data — and `agents upgrade` snapshots first.
 `agents man <command>` prints a command's full manual — its synopsis and flags read
 live from the parser (so they never drift) plus authored conventions and worked
 examples. `agents man` alone covers the core concepts (herdr, naming, metadata), and
-`agents man herdr|conventions|recap` are concept pages.
+`agents man herdr|conventions` are concept pages.
 
 ## Finding sessions
 
@@ -240,6 +253,8 @@ man <command>` (or `agents man` for the core concepts).
 | Goal | Command |
 |------|---------|
 | Agents whose prompt/work mentions a term | `agents find -a roni` — deep-greps transcripts (`agents find roni` is the quick title/prompt search) |
+| Every agent's latest **recap** (status digest) | `agents recap --all` (freshest first) |
+| One agent's **check-in history** | `agents recap <name>` |
 | A recap of every agent that's **up** | `agents ls --running` — DESC shows each one's latest check-in |
 | Agents carrying **both** an issue and a PR | `agents ls --meta issue --meta pr` — shows `issue: … pr: …` inline |
 | Everyone on a project | `agents ls --meta project=ol` |
