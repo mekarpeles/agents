@@ -865,7 +865,9 @@ def _print_agents(rows):
             for key, _, _ in _HDR_COLS[1:]]
         desc = _clip(str(r.get("desc", "")), desc_w)
         print((f"{_dot(r['status'])} " + "  ".join(cells) + "  " + desc).rstrip())
-        pad = "  " + " " * (r.get("name_indent", 0) + 2)   # under the name, +2
+        # Keep the tree's vertical bars running down through the stacked meta
+        # (detail_prefix carries them); flat view has none, so just indent.
+        pad = "  " + r.get("detail_prefix", "  ")
         avail = max(10, total - len(pad))
         for line in r.get("details", []):
             print(pad + _clip(line, avail))
@@ -887,12 +889,13 @@ def _tree_rows(entries):
 
     def walk(e, prefix, is_last, depth):
         if depth == 0:
-            cell, child_prefix, indent = e["name"], "", 0
+            cell, child_prefix = e["name"], ""
         else:
             cell = prefix + ("└─ " if is_last else "├─ ") + e["name"]
             child_prefix = prefix + ("   " if is_last else "│  ")
-            indent = len(prefix) + 3   # columns before the name text (branch = 3)
-        rows.append({**e, "name": cell, "name_indent": indent})
+        # Detail lines sit in this node's child region, so they carry the same
+        # continuation prefix — the tree's │ bars keep running past the meta.
+        rows.append({**e, "name": cell, "detail_prefix": child_prefix})
         kids = sorted(children.get(e["name"], []), key=lambda x: x["name"])
         for i, k in enumerate(kids):
             walk(k, child_prefix, i == len(kids) - 1, depth + 1)
@@ -962,6 +965,7 @@ def cmd_ls(args):
         # often a stale cmux message, not a useful description).
         desc = (a.get("recap") or a.get("role")
                 or home.initial_prompt(a["name"]) or titles.get(sid) or "")
+        desc = " ".join(desc.split())   # one line — collapse any newlines/runs
         entries.append({"status": status, "name": a["name"], "sid": (sid or "")[:8],
                         "type": a.get("type") or "", "desc": desc,
                         "team": a.get("team") or "",
@@ -978,6 +982,7 @@ def cmd_ls(args):
             if archived and not show_archived:
                 continue
             desc = titles.get(sid) or os.path.basename((rec.get("cwd") or "").rstrip("/"))
+            desc = " ".join(desc.split())
             entries.append({"status": "archived" if archived else "up",
                             "name": rec.get("name") or "—",
                             "sid": (sid or "")[:8], "type": "",
