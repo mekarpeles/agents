@@ -113,3 +113,29 @@ def initial_prompt(name):
         return open(os.path.join(home_dir(name), "PROMPT.md")).read().strip() or None
     except OSError:
         return None
+
+
+def append_recap(name, text, ts):
+    """Append a check-in to the agent's recap journal (~/.agents/<name>/recap.log),
+    one tab-separated `<ts>\\t<text>` line per check-in. The journal is a free,
+    token-free progress trail; the current recap is just its last line. Best-effort
+    — a home that doesn't exist yet is created."""
+    home = home_dir(name)
+    os.makedirs(home, exist_ok=True)
+    with open(os.path.join(home, "recap.log"), "a") as f:
+        f.write(f"{ts}\t{text}\n")
+
+
+def recap_log(name, limit=None):
+    """The agent's recap journal as a list of (ts, text), oldest first (or the last
+    `limit` entries). Empty if there's no journal."""
+    try:
+        lines = open(os.path.join(home_dir(name), "recap.log")).read().splitlines()
+    except OSError:
+        return []
+    rows = []
+    for ln in lines:
+        ts, _, text = ln.partition("\t")
+        if text:
+            rows.append((ts, text))
+    return rows[-limit:] if limit else rows
