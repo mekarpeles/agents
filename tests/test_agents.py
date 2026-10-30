@@ -1366,6 +1366,19 @@ def test_ls_meta_key_shows_inline_and_filters(env, capsys):
     assert "x " not in out and "\nx" not in out          # filtered to pr-havers
 
 
+def test_ls_meta_list_key_stacks_full(env, capsys):
+    # a list-valued key (epics) is too long to inline, so --meta epics stacks the
+    # full list beneath the agent instead of clipping it in the column
+    db, cli = env["db"], env["cli"]
+    db.register("dewey", agent_type="lead", meta={"epics": [13923, 13924, 13925]})
+    db.register("saul", agent_type="lead", meta={"project": "ol"})   # no epics
+    a = cli.build_parser().parse_args(["ls", "--flat", "--meta", "epics"])
+    assert a.func(a) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert any(l.strip() == "epics: [13923, 13924, 13925]" for l in lines)  # full, stacked
+    assert not any("saul" in l for l in lines)           # filtered to epics-havers
+
+
 def test_ls_desc_prefers_recap_over_role(env, capsys):
     db, cli = env["db"], env["cli"]
     db.register("dewey", agent_type="lead", role="Tags Lead")

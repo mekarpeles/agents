@@ -32,10 +32,13 @@ Each layer owns one job; delivery is independent of where an agent runs.
 | `transport.py` | vendored native socket delivery (self-contained, stdlib-only) |
 | `history.py` | Claude session discovery behind `find` |
 | `migrate.py` | one-way cmux → agents migration |
+| `manuals.py` | authored `agents man` content (flags render live from the parser) |
+| `api.py` | the importable library surface (`import agents`) — data, not printing |
 | `types/<t>/AGENTS.md` | bundled agent-type templates (`default`, `ada`) |
 
 Dependencies flow one way: `cli → {db, home, hosts, session, transport, history,
-migrate}`, `home → db`; everything else is a leaf. No cycles.
+migrate, manuals}`, `home → db`, `api → {db, home, session, transport}` and
+`__init__ → api`; everything else is a leaf. No cycles.
 
 ## Everything is a session
 
@@ -76,6 +79,30 @@ rather than spawning a fresh agent.
   adopting it (`up`) lifts it, and `rm --purge` also deletes its transcript (making
   it non-resumable). Claude exposes no per-session delete (only project-wide
   `claude purge`), and never prunes `history.jsonl`, so the tombstone is ours.
+
+## Metadata, recap, durability & the library
+
+The registry row carries more than launch metadata:
+
+- **`meta`** — a JSON object of queryable keys (`project`, `issue`, `pr`, and leads'
+  `epics`). `db.select(meta=[(key, value|None)])` filters it: a bare key is an
+  existence test, a value is stringified equality, and a *list*-valued key (epics)
+  matches by membership. `project` lives here, not in a group; this is what resolves
+  agent ↔ issue ↔ PR without encoding it in the name.
+- **`recap` / `recap_at`** — a one-line, agent-set status (`checkin`), stamped and
+  appended to `~/.agents/<name>/recap.log`. Opt-in and never computed, so it costs
+  no tokens; `ls`/`more` surface it.
+- **Durability** — the whole table mirrors to `~/.agents/agents-snapshot.json`
+  (`db.snapshot`, written atomically), refreshed lazily at most hourly on any
+  command (`maybe_snapshot`). `db.reindex_from_snapshot` rebuilds the table from it.
+- **Versioned migrations** — the schema version rides in `PRAGMA user_version`. The
+  additive `init()` block is the baseline (v1); further changes are numbered steps
+  in `MIGRATIONS`, applied once in order (`agents schema`, and `upgrade` runs them
+  against the freshly installed code after snapshotting first). Additive-only, so an
+  upgrade never drops cached columns.
+- **Library** — `api.py` wraps the `db`/`home`/`transport` layers in data-returning
+  functions, re-exported from `__init__`, so `import agents; agents.ls(...)` works
+  without the CLI. The CLI's `cmd_*` print; the API never does.
 
 ## Binding by sessionId (not cwd-recency)
 
@@ -119,16 +146,22 @@ the pid resolved from the sessionId, and the window/pane closes when claude exit
   until a team `up`). Only when the agent runs outside tmux (foreground/adopted, no
   pane) does attach fall back to restarting it into a tmux window — refused while
   live unless `-f` (the shared restart gate). `detach` maps to `detach-client`.
-- **herdr** — a detached herdr tab in a herdr workspace (needs a running herdr).
+- **herdr** — a detached herdr tab (needs a running herdr). Placement follows the
+  type: a **lead** gets its own workspace (found or created by its name); an **ada**
+  opens as a tab in its lead's workspace (`_host_key` resolves the workspace). A
+  live agent is promoted in with `attach -f --host herdr` (lossless resume).
 - **foreground** — claude attached to the current terminal; no team, no attach.
 
 ## Commands, by category
 
 | category | commands | reads/acts on |
 |---|---|---|
-| **Query** | `ls` (registry), `find` (sessions), `whoami` (this session) | — |
+| **Query** | `ls` (registry), `find` (sessions), `whoami` (this session), `whois` (name → live SendMessage address), `more` (one agent's full record), `session` (tail a transcript) | — |
 | **Provision** | `register`, `migrate`, `configure` | home, type, tooling, config |
-| **Organize** | `group` (add/rm labels), `team` (set/clear lead), `rename` | the registry row |
+| **Organize** | `group` (labels), `team` (lead), `meta` (structured metadata), `rename` | the registry row |
+| **Status** | `checkin` (record a recap) | the agent's recap + journal |
+| **Durability** | `snapshot`, `reindex` (rebuild from JSON), `schema` (version/migrate) | the JSON mirror / schema |
+| **Docs** | `man` (manual for a command or concept) | — |
 | **Manage** | `rm` (archive agent *or* session; `--restore` lifts; `--purge` deletes) | a registry row or a session tombstone |
 | **Communicate** | `send` | a running agent's socket |
 | **Operate** | `up`, `down`, `attach`, `detach` | the live process |
@@ -136,14 +169,18 @@ the pid resolved from the sessionId, and the window/pane closes when claude exit
 `ls` lists agents you manage **and** every live session that isn't one — it joins
 the registry, the live sockets (`transport.list_sessions`), and history titles, so
 anything `up` is visible and addressable (`send -s <id>`). It prints aligned
-`NAME SESSION STATUS TYPE GROUPS DESC` columns with a colored status light, and
-`ls -t` nests reports under their lead as a tree. `find` searches every Claude
+`NAME SESSION TYPE META DESC` columns — status is a shape glyph (`●` up, `○` down,
+`✗` archived; colorblind-safe), `META` is a field count, and `DESC` is the freshest
+of recap → desc → task; `ls -t` nests reports under their lead as a tree, and
+`--meta` expands metadata stacked beneath each agent (`--meta <key>` surfaces one
+key). `find` searches every Claude
 session on the machine (live or not) so you can adopt one (`register
 --session-id`); by default it matches session *metadata* (title, cwd, the prompts
 you typed) off the cached index, `-a` makes it a *deep* search that greps full
 transcript bodies, and `--archived` reveals sessions you tombstoned with `rm`.
-`up` and `down` take the `name | --team | --group | --type`
-selector; `ls` filters by `--group`/`--type`/`-t <team>` and by status
+`up` and `down` take the `name | --team | --group | --type | --meta` selector
+(`--meta key[=val]` matches by metadata); `ls` filters by
+`--group`/`--type`/`-t <team>`/`--meta` and by status
 (`--running`/`--down`/`--archived`, archived hidden unless `-a`; those filters also
 drop the unregistered sessions).
 

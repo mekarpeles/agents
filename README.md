@@ -61,6 +61,9 @@ agents attach pam             # attach to its tmux window (Ctrl-b d to detach)
 agents attach --team agents-lead  # attach to the team's shared session
 agents send pam "status?"     # message a registered agent
 agents send -s <session> "hi" # …or any live session by id or prefix (no registry)
+agents whois oliver           # resolve a registry name to its live SendMessage address
+agents checkin "tests green"  # record where you are (agent-set recap, timestamped)
+agents meta set ada pr=14212  # structured metadata (project/issue/pr/epics); `meta get` too
 agents group add pam infra    # add/remove group labels (pam may be in many)
 agents team add ada1 agents-lead   # set (or `team rm ada1` to clear) its team
 agents rename ada1 ada-solr   # rename (home, reports & transcript follow; -f if live)
@@ -68,10 +71,15 @@ agents whoami                 # who am I? — an agent identifies itself (--json
 agents find pam               # search past sessions to resume or adopt
 agents ls                     # every active session (named or not); aligned columns
 agents ls -t                  # team/tree view: reports nested under their lead
+agents ls --meta pr           # surface a meta field inline (or `--meta` to expand all)
+agents more ada               # one agent's full record (meta, recap, home, session)
+agents session ada -f         # tail its Claude transcript (live; --head/--tail too)
+agents man ls                 # the manual for a command (flags + conventions + examples)
 agents down pam               # stop it   (agents down --team agents-lead stops the team)
 agents rm pam                 # remove (archive): hidden from ls, kept (ls -a shows it)
+agents snapshot               # back up the registry to JSON (agents reindex restores it)
 agents configure              # permission mode, default host, tmux, tab-completion
-agents upgrade                # update the agents CLI itself (from GitHub)
+agents upgrade                # update the agents CLI itself (snapshots + migrates first)
 ```
 
 Launched agents run in a configurable **permission mode** — the default,
@@ -130,7 +138,7 @@ machine use, or `--session-id <id>` to look up another session.
 ## Teams, groups & types
 
 Three ways to organize and target agents, all of which `ls`/`up`/`down` accept
-and intersect:
+and intersect (plus `--meta`, below):
 
 - a **team** (`--team`, short `-t`) is a lead plus the agents reporting to it —
   the colocation unit (one tmux session) and the reporting relationship `ls -t`
@@ -157,6 +165,52 @@ agents down --team payments-lead         # stop the team
 agents team add ada-7 payments-lead      # ada-7 now reports to that lead
 agents group add ada-7 web,search        # …and carries the web + search labels
 ```
+
+## Metadata & recap
+
+Beyond team/group/type, each agent carries structured **metadata** — a small JSON
+object of queryable keys. The conventions: `project`, `issue`, `pr`, and (for
+leads) `epics` (a list). `project` lives here, not in a group.
+
+```bash
+agents meta set pr-14212 project=ol issue=14209 pr=14212   # scalars
+agents meta set dewey '{"epics":[14200,14300]}'            # a list value
+agents ls --meta pr=14212          # the agent owning a PR (epics match by membership)
+agents ls --meta                   # expand every field under each agent
+agents up --meta project=ol --host herdr   # selectors take --meta too
+```
+
+A **recap** is a one-line, agent-set status ("where we are"), recorded with `agents
+checkin "…"`. It's timestamped and journaled (`~/.agents/<name>/recap.log`), and
+it's what `ls` shows in DESC and `agents more <name>` shows with its age.
+
+## Library
+
+`pip install` gives you the `agents` CLI **and** an importable package, so a program
+can drive the registry directly (returning data, not printing):
+
+```python
+import agents
+agents.register("tess", type="ada", team="saul", meta={"pr": "14212"})
+for a in agents.ls(group="project:ol"):
+    print(a["name"], a["status"], a["meta"])
+agents.send("saul", "tess is up"); agents.checkin("tess", "builder patched")
+```
+
+## Durability
+
+The SQLite registry mirrors to one JSON snapshot (`~/.agents/agents-snapshot.json`),
+refreshed lazily (at most hourly) on any command and written atomically. If the db
+is ever lost or corrupt, `agents reindex` rebuilds it from the snapshot. Schema
+changes are versioned (`agents schema`) and additive at the baseline, so an upgrade
+never drops cached data — and `agents upgrade` snapshots first.
+
+## Manuals
+
+`agents man <command>` prints a command's full manual — its synopsis and flags read
+live from the parser (so they never drift) plus authored conventions and worked
+examples. `agents man` alone covers the core concepts (herdr, naming, metadata), and
+`agents man herdr|conventions|recap` are concept pages.
 
 ## Finding sessions
 
@@ -185,6 +239,7 @@ man <command>` (or `agents man` for the core concepts).
 | A recap of every agent that's **up** | `agents ls --running` — DESC shows each one's latest check-in |
 | Agents carrying **both** an issue and a PR | `agents ls --meta issue --meta pr` — shows `issue: … pr: …` inline |
 | Everyone on a project | `agents ls --meta project=ol` |
+| Leads and their **epics** | `agents ls --meta epics` (the list stacks full beneath each) |
 | The agent that **owns PR N** | `agents ls --json --meta pr=<N>` — JSONL, one object per line |
 | All **archived** agents | `agents ls --archived` |
 | Each agent's **home dir** (and cwd) | `agents ls --json` → `.home` / `.cwd` per line (every registered agent has a home) |

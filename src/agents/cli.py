@@ -826,19 +826,6 @@ _HDR_COLS = [("name", "NAME", 30), ("sid", "SESSION", 8),
 _META_ORDER = ("project", "issue", "pr", "epics")   # the common keys lead
 
 
-def _inline_meta(meta, keys):
-    """The requested keys as inline `key: value` pairs (for `ls --meta <key>`), from
-    an agent's own metadata. A key not present on the agent is skipped."""
-    parts = []
-    for tok in keys:
-        k = tok.split("=", 1)[0].strip()
-        if k in meta:
-            v = meta[k]
-            parts.append(f"{k}: [{', '.join(map(str, v))}]" if isinstance(v, list)
-                         else f"{k}: {v}")
-    return "  ".join(parts)
-
-
 def _detail_lines(groups, meta, limit=None):
     """An agent's metadata and groups as stacked `key: value` lines (one per line)
     for the ls block — e.g. 'project: ol', 'epics: [13923, 13924]', 'groups:
@@ -994,8 +981,18 @@ def cmd_ls(args):
         desc = " ".join(desc.split())   # one line — collapse any newlines/runs
         meta_d = db.meta_of(a)
         full = _detail_lines(db.groups_of(a), meta_d)
-        if inline_keys:                      # --meta <key>: that key's value inline
-            meta_col, details = _inline_meta(meta_d, inline_keys), []
+        if inline_keys:                      # --meta <key>: surface that key
+            scal, lst = [], []
+            for tok in inline_keys:
+                k = tok.split("=", 1)[0].strip()
+                if k not in meta_d:
+                    continue
+                v = meta_d[k]
+                if isinstance(v, list):      # a list (epics) -> stack it, full width
+                    lst.append(f"{k}: [{', '.join(map(str, v))}]")
+                else:                        # a scalar (pr, issue) -> inline
+                    scal.append(f"{k}: {v}")
+            meta_col, details = "  ".join(scal), lst
         elif expand:                         # bare --meta: expand all, stacked below
             meta_col, details = (str(len(full)) if full else ""), full
         else:                                # default: just the field count

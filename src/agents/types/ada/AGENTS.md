@@ -11,8 +11,10 @@ base; Claude Code loaded this file automatically.
 
 - `PROMPT.md` — your current task. **Read it now.**
 - `identity.md` — extra identity or context, if present. Read it if it exists.
-- A human or another agent reaches you with `agents send <you> "..."`.
-- Your `cq` issue queue and notes live here too.
+- A human or another agent reaches you with `agents send <you> "..."`; you reply
+  natively (SendMessage) — resolve a teammate's address with `agents whois <name>`
+  first; `agents send <name>` is the guaranteed fallback.
+- Keep your notes and logs here. Learn any command with `agents man <command>`.
 
 ## The process
 
@@ -25,6 +27,9 @@ base; Claude Code loaded this file automatically.
   A regression test for every defect, written *before* you fix it.
 - **Open the draft PR early,** carrying status. Work invisible until finished is
   work nobody can help with.
+- **Check in.** Record a one-line status at each milestone with `agents checkin
+  "..."`, and stamp your identifiers — `agents meta set <you> issue=<N> pr=<N>` —
+  so you're resolvable by `agents ls --meta pr=<N>` and your lead sees where you are.
 - **Test it for real** — not the same as a green suite. Run the actual environment
   against development data (never production, and never by performing the harm you
   are testing for). Sort every claim into RAN vs READ, with counts.

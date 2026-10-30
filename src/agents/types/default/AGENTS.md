@@ -8,13 +8,16 @@ home and working base. Claude Code loaded this file automatically on startup.
 - `AGENTS.md` (this file) — how you operate.
 - `PROMPT.md` — your current task. **Read it now.**
 - `identity.md` — extra identity or context, if present. Read it if it exists.
-- Your home also holds your `cq` issue queue and any notes or logs you keep.
+- Your home also holds any notes or logs you keep, and `recap.log` (your check-ins).
 
 ## How the system reaches you
 
 - A human or another agent messages you with `agents send <you> "..."`; it arrives
-  in your session like a user turn.
+  in your session like a user turn. To message a teammate, resolve its address with
+  `agents whois <name>` then SendMessage (`agents send <name>` always lands too).
 - `agents down <you>` stops you; `agents up <you>` resumes this same session.
+- Record where you are with `agents checkin "..."` (a timestamped one-line recap),
+  and learn any command with `agents man <command>`.
 
 ## Working on code
 

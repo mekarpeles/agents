@@ -65,7 +65,17 @@ WHERE EACH FACT LIVES (don't overload one field for another's job):
   • recap    — where the agent IS right now; the agent sets it via `agents checkin`.
 
 Query by any of these: `agents ls --meta project=ol`, `--meta pr=14212`,
-`--meta epics=14200` (list membership), `-g solr`, `--type lead`, `-t saul`.""",
+`--meta epics=14200` (list membership), `-g solr`, `--type lead`, `-t saul`.
+
+MORE META KEYS (established conventions):
+  - meta.branch — the git branch an ada works on; its worktree is its `cwd` (spawn
+    a worktree-ada with `--cwd <worktree>`), not a separate meta key.
+  - An ada owning MORE THAN ONE issue records them as a list: meta.issue =
+    [13929, 13755] (list membership makes `--meta issue=13755` still resolve it).
+
+ADA NAMES are task-scoped and track the stable identifier: issue-<N>-<slug> while
+it's issue work, pr-<N>-<slug> once a PR is the unit. Prefer the issue form when no
+PR exists yet, and set meta.pr when the PR opens — no rename needed.""",
 
     "recap": """\
 recap — keeping "where we are" current, cheaply
@@ -139,10 +149,17 @@ MANUALS = {
         see_also=["attach"],
     ),
     "ls": dict(
-        best="The registry view. Tree by default (reports nest under their lead); "
-             "--flat for a table. Filter by -g/--type/-t/--meta; --json for "
-             "machine output. DESC shows the freshest of recap -> desc -> task.",
-        examples=[("agents ls", "the whole fleet as a tree"),
+        best="The registry view. Status is a SHAPE (reads without color): ● up, "
+             "○ down, ✗ archived. Tree by default (reports nest under their lead); "
+             "--flat for a table. DESC is the freshest of recap -> desc -> task. "
+             "META is a field COUNT by default: `--meta` (bare) expands all "
+             "metadata stacked beneath each agent; `--meta <key>` filters to "
+             "matches AND shows that key inline. --json for machine output "
+             "(carries meta, home, cwd).",
+        examples=[("agents ls", "the whole fleet as a tree (META = a count)"),
+                  ("agents ls --meta", "expand every agent's metadata, stacked"),
+                  ("agents ls --meta pr", "agents with a PR, shown inline"),
+                  ("agents ls --meta epics", "leads with epics (the list stacks full)"),
                   ("agents ls --meta project=ol", "one project (meta is canonical)"),
                   ("agents ls --json --meta pr=14212", "the agent owning a PR"),
                   ("agents ls -g solr --running", "live agents in a group")],
@@ -159,9 +176,12 @@ MANUALS = {
         best="The guaranteed way to message an agent (registry-resolved, host- "
              "independent). Agents normally message each other with SendMessage — "
              "resolve the target first with `agents whois <name>`; `send` is the "
-             "fallback that always lands.",
+             "fallback that always lands. The sender label defaults to the calling "
+             "agent's registered name (or your OS user from a human terminal); pass "
+             "--from to override.",
         examples=[('agents send saul "status?"', "message by registry name"),
-                  ('agents send oliver "PR #14212 is ready for review"', "report up")],
+                  ('agents send oliver "PR #14212 is ready for review"', "report up"),
+                  ('agents send saul "note" --from github:alice', "override the sender")],
         see_also=["whois", "checkin"],
     ),
     "whois": dict(
