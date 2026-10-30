@@ -1315,18 +1315,41 @@ def test_detail_lines_stack_meta_and_groups_with_cap(env):
     assert capped == ["project: ol", "issue: 1", "pr: 2", "… +1 more"]
 
 
-def test_ls_stacks_meta_vertically_not_json(env, capsys):
+def test_ls_default_shows_meta_count_not_fields(env, capsys):
     db, cli = env["db"], env["cli"]
     db.register("w", agent_type="lead", meta={"project": "ol", "pr": "123"},
                 workspace="solr")
     a = cli.build_parser().parse_args(["ls", "--flat"])
     assert a.func(a) == 0
+    out = capsys.readouterr().out
+    assert "META" in out                                 # the count column header
+    assert "3" in out                                    # project + pr + groups = 3
+    assert "project: ol" not in out                      # not expanded by default
+
+
+def test_ls_bare_meta_expands_stacked(env, capsys):
+    db, cli = env["db"], env["cli"]
+    db.register("w", agent_type="lead", meta={"project": "ol", "pr": "123"},
+                workspace="solr")
+    a = cli.build_parser().parse_args(["ls", "--flat", "--meta"])
+    assert a.func(a) == 0
     lines = capsys.readouterr().out.splitlines()
-    # each fact is its own stacked line beneath the agent, not a JSON blob
-    assert any(l.strip() == "project: ol" for l in lines)
+    assert any(l.strip() == "project: ol" for l in lines)      # stacked beneath
     assert any(l.strip() == "pr: 123" for l in lines)
     assert any(l.strip() == "groups: [solr]" for l in lines)
-    assert "{" not in "\n".join(lines) and "GROUPS" not in "\n".join(lines)
+    assert "{" not in "\n".join(lines)                          # not JSON
+
+
+def test_ls_meta_key_shows_inline_and_filters(env, capsys):
+    db, cli = env["db"], env["cli"]
+    db.register("w", agent_type="lead", meta={"project": "ol", "pr": "123"})
+    db.register("x", agent_type="ada", meta={"project": "ol"})   # no pr
+    a = cli.build_parser().parse_args(["ls", "--flat", "--meta", "pr"])
+    assert a.func(a) == 0
+    out = capsys.readouterr().out
+    assert "pr: 123" in out                              # the key, inline
+    assert "project: ol" not in out                      # only the asked-for key
+    assert "x " not in out and "\nx" not in out          # filtered to pr-havers
 
 
 def test_ls_desc_prefers_recap_over_role(env, capsys):

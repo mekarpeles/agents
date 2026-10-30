@@ -813,12 +813,26 @@ def _clip(s, n):
 _ALL_TEAMS = "*"  # `ls -t` with no value: tree of every team
 
 # (field key, header, max width) in display order: NAME SESSION STATUS TYPE GROUPS DESC
-# The header line per agent; metadata + groups stack beneath it (see _detail_lines),
-# so the line stays narrow and never overflows the terminal.
+# The header line per agent. By default the META column is just a count of how
+# many metadata/group fields an agent has; `--meta` expands them (stacked beneath,
+# see _detail_lines) and `--meta <key>` surfaces that key's value inline here.
 _HDR_COLS = [("name", "NAME", 30), ("sid", "SESSION", 8),
-             ("status", "STATUS", 8), ("type", "TYPE", 6)]
+             ("status", "STATUS", 8), ("type", "TYPE", 6), ("meta", "META", 24)]
 
 _META_ORDER = ("project", "issue", "pr", "epics")   # the common keys lead
+
+
+def _inline_meta(meta, keys):
+    """The requested keys as inline `key: value` pairs (for `ls --meta <key>`), from
+    an agent's own metadata. A key not present on the agent is skipped."""
+    parts = []
+    for tok in keys:
+        k = tok.split("=", 1)[0].strip()
+        if k in meta:
+            v = meta[k]
+            parts.append(f"{k}: [{', '.join(map(str, v))}]" if isinstance(v, list)
+                         else f"{k}: {v}")
+    return "  ".join(parts)
 
 
 def _detail_lines(groups, meta, limit=None):
@@ -916,7 +930,13 @@ def cmd_ls(args):
     tree = not getattr(args, "flat", False)
     specific = args.team if args.team not in (None, _ALL_TEAMS) else None
     show_archived = args.all or args.archived
-    meta_q = _parse_meta_query(getattr(args, "meta", None))
+    # --meta modes: no flag -> META is a count; bare --meta -> expand all stacked;
+    # --meta <key> -> filter by it AND show just that key inline in the META cell.
+    meta_tokens = getattr(args, "meta", None)
+    meta_keys = [t for t in (meta_tokens or []) if t is not None]
+    expand = bool(meta_tokens) and any(t is None for t in meta_tokens)
+    inline_keys = [] if expand else meta_keys
+    meta_q = _parse_meta_query(meta_keys)
     agents = db.select(group=args.group, agent_type=args.type, team=specific,
                        include_archived=show_archived, meta=meta_q or None)
     live = {r.get("sessionId"): r for r in native.list_sessions()}
@@ -966,10 +986,17 @@ def cmd_ls(args):
         desc = (a.get("recap") or a.get("role")
                 or home.initial_prompt(a["name"]) or titles.get(sid) or "")
         desc = " ".join(desc.split())   # one line — collapse any newlines/runs
+        meta_d = db.meta_of(a)
+        full = _detail_lines(db.groups_of(a), meta_d)
+        if inline_keys:                      # --meta <key>: that key's value inline
+            meta_col, details = _inline_meta(meta_d, inline_keys), []
+        elif expand:                         # bare --meta: expand all, stacked below
+            meta_col, details = (str(len(full)) if full else ""), full
+        else:                                # default: just the field count
+            meta_col, details = (str(len(full)) if full else ""), []
         entries.append({"status": status, "name": a["name"], "sid": (sid or "")[:8],
-                        "type": a.get("type") or "", "desc": desc,
-                        "team": a.get("team") or "",
-                        "details": _detail_lines(db.groups_of(a), db.meta_of(a), limit=3)})
+                        "type": a.get("type") or "", "meta": meta_col, "desc": desc,
+                        "team": a.get("team") or "", "details": details})
 
     # Also list live sessions that aren't registered agents (as tree roots, or
     # flat rows) — unless we're narrowing the registry, which they can't match.
@@ -985,7 +1012,7 @@ def cmd_ls(args):
             desc = " ".join(desc.split())
             entries.append({"status": "archived" if archived else "up",
                             "name": rec.get("name") or "—",
-                            "sid": (sid or "")[:8], "type": "",
+                            "sid": (sid or "")[:8], "type": "", "meta": "",
                             "desc": desc, "team": "", "details": []})
 
     if not entries:
@@ -2038,10 +2065,11 @@ def build_parser():
     s.add_argument("--flat", action="store_true",
                    help="flat table instead of the default tree view")
     s.add_argument("--type", help="only agents of this type (e.g. lead, ada)")
-    s.add_argument("--meta", action="append", metavar="KEY[=VALUE]",
-                   help="only agents whose metadata has this key (bare KEY) or "
-                        "KEY=VALUE (repeatable; all must match), e.g. --meta pr or "
-                        "--meta project=ol")
+    s.add_argument("--meta", action="append", nargs="?", metavar="KEY[=VALUE]",
+                   help="bare (`--meta`): expand all metadata stacked under each "
+                        "agent. With a KEY (`--meta pr`) or KEY=VALUE: filter to "
+                        "matches AND show that key inline in the META column. "
+                        "Omit entirely and META is just a field count.")
     s.add_argument("--running", action="store_true", help="only agents with a live session")
     s.add_argument("--down", action="store_true", help="only stopped agents")
     s.add_argument("-a", "--all", action="store_true",
