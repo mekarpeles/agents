@@ -1282,22 +1282,29 @@ def cmd_more(args):
     return 0
 
 
+def _transcript_by_sid(sid, cwd=None):
+    """The Claude transcript (.jsonl) for a sessionId: the cwd's project dir first,
+    then any project dir. Returns a path or None. This is all `session` needs — a
+    transcript belongs to a sessionId, registered agent or not."""
+    if not sid:
+        return None
+    if cwd:
+        p = history.transcript_path(cwd, sid)
+        if os.path.exists(p):
+            return p
+    import glob
+    hits = glob.glob(os.path.join(session.PROJECTS_DIR, "*", f"{sid}.jsonl"))
+    return hits[0] if hits else None
+
+
 def _transcript_for(name):
-    """Locate an agent's Claude transcript (.jsonl): the cwd's project dir first,
-    then any project dir (an agent whose cwd moved). Returns a path or None."""
+    """A registered agent's transcript, via its bound sessionId (or None)."""
     reg = db.get(name)
     if not reg:
         return None
     sid = reg.get("session_id") or home.read_session_id(name)
-    if not sid:
-        return None
     cwd = reg.get("cwd") or home.agent_cwd(name) or home.home_dir(name)
-    p = history.transcript_path(cwd, sid)
-    if os.path.exists(p):
-        return p
-    import glob
-    hits = glob.glob(os.path.join(session.PROJECTS_DIR, "*", f"{sid}.jsonl"))
-    return hits[0] if hits else None
+    return _transcript_by_sid(sid, cwd)
 
 
 def _render_transcript_line(r):
@@ -1330,17 +1337,26 @@ def _render_transcript_line(r):
 
 
 def cmd_session(args):
-    """Tail (or head) an agent's Claude session transcript. Human-rendered by
-    default (role: text, one line per turn), --raw for the exact JSONL. --tail
-    (default) shows the last N, --head the first N, -f follows live. Works whether
-    the agent is up or down — it reads the transcript file, not the live pane (that
-    is what `attach` is for)."""
+    """Tail (or head) any Claude session's transcript — a registered agent by name,
+    or any session `ls`/`find` shows by its display name or id/prefix (a transcript
+    belongs to a sessionId, registered or not). Human-rendered by default (role:
+    text, one line per turn), --raw for the exact JSONL. --tail (default) shows the
+    last N, --head the first N, -f follows live. Reads the transcript file, not the
+    live pane (that is what `attach` is for), so it works whether up or down."""
     path = _transcript_for(args.name)
+    resolved = bool(db.get(args.name))
+    if not path and not resolved:
+        # not a registered agent — resolve as any session (like `send -s` / `rm`)
+        sid, cwd, err = _resolve_known_session(args.name)
+        if err:
+            return _err(err)
+        resolved = bool(sid)
+        path = _transcript_by_sid(sid, cwd) if sid else None
     if not path:
-        if not db.get(args.name):
-            return _err(f"'{args.name}' is not a registered agent")
-        return _err(f"'{args.name}' has no transcript yet "
-                    "(it hasn't run, or its session isn't bound)")
+        if resolved:
+            return _err(f"'{args.name}' has no transcript on disk yet "
+                        "(a brand-new or empty session hasn't written one)")
+        return _err(f"'{args.name}' is not a known agent or session")
     import json as _json
     n = args.lines
 
@@ -2177,8 +2193,9 @@ def build_parser():
     s.set_defaults(func=cmd_more)
 
     s = sub.add_parser("session",
-                       help="tail/head an agent's Claude session transcript")
-    s.add_argument("name")
+                       help="tail/head any session's transcript (agent name, or a "
+                            "session id/display-name)")
+    s.add_argument("name", help="a registered agent, or any session's name or id/prefix")
     s.add_argument("-n", "--lines", type=int, default=20,
                    help="how many events to show (default 20)")
     s.add_argument("--head", action="store_true",

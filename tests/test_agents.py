@@ -1553,6 +1553,22 @@ def test_session_no_transcript_errors(env):
     assert a.func(a) == 1
 
 
+def test_session_works_for_unregistered_session(env, monkeypatch, capsys):
+    # a transcript belongs to a sessionId — `session` must reach one with no agent
+    # row, resolved by its session id (or display name) like `send -s` / `rm`.
+    from agents import history
+    cwd = "/tmp/stray-proj"
+    _write_transcript(env, "whoever", "stray-sid-9", cwd, [
+        {"type": "user", "message": {"role": "user", "content": "hello from a stray"}},
+    ])
+    monkeypatch.setattr(env["native"], "list_sessions",
+                        lambda *a, **k: [{"sessionId": "stray-sid-9", "cwd": cwd,
+                                          "name": "stray-7"}])
+    a = env["cli"].build_parser().parse_args(["session", "stray-sid-9"])   # by id
+    assert a.func(a) == 0
+    assert "hello from a stray" in capsys.readouterr().out
+
+
 # --- man (manuals) ---------------------------------------------------------
 
 def test_man_renders_live_flags_and_authored_examples(env, capsys):
