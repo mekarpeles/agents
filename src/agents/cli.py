@@ -40,6 +40,37 @@ def _err(msg):
     return 1
 
 
+def _parse_meta_assign(tokens):
+    """Parse `key=value` tokens (or a whole `{json}` object) into a dict, for
+    setting metadata. A token with no `=` is an error — dropping a key is `meta
+    rm`, not an empty value."""
+    import json
+    out = {}
+    for t in tokens or []:
+        t = t.strip()
+        if t.startswith("{"):
+            out.update(json.loads(t))
+            continue
+        k, sep, v = t.partition("=")
+        if not sep:
+            raise ValueError(f"metadata must be key=value (got {t!r})")
+        out[k.strip()] = v
+    return out
+
+
+def _parse_meta_query(tokens):
+    """Parse `key` / `key=value` tokens into (key, value|None) filter pairs: a bare
+    key matches existence (metadata.<key> is present), key=value matches equality."""
+    out = []
+    for t in tokens or []:
+        t = t.strip()
+        if not t:
+            continue
+        k, sep, v = t.partition("=")
+        out.append((k.strip(), v if sep else None))
+    return out
+
+
 def _claude_cmd(name, resume_id):
     # A freshly launched session must start (and write its sessionId) without a
     # human keypress, or `up` can't bind it. The configured permission mode
@@ -87,11 +118,19 @@ def _bind_and_inject(name, pid, is_first_start, inject, sid_hint=None):
     prompt = home.initial_prompt(name)
     if prompt:
         parts.append(prompt)
-    try:
-        native.send(sid, "\n\n".join(parts), sender="agents")
-    except native.DeliveryError as e:
-        print(f"agents: warning — could not inject startup prompt: {e}",
-              file=sys.stderr)
+    # A just-launched session may need a moment to register its socket — tmux
+    # execs claude so it's immediate, but herdr runs it as a grandchild of the
+    # pane, so poll briefly. A failed nudge must never crash the launch: the agent
+    # is already running and bound, so at worst it misses a reminder.
+    body = "\n\n".join(parts)
+    for _ in range(50):  # ~5s
+        try:
+            native.send(sid, body, sender="agents")
+            return sid
+        except (native.SessionNotFound, native.DeliveryError):
+            time.sleep(0.1)
+    print(f"agents: warning — could not inject startup prompt for '{name}' "
+          f"(session {sid[:8]} not reachable yet)", file=sys.stderr)
     return sid
 
 
@@ -112,10 +151,14 @@ def cmd_register(args):
         caller = _caller_agent()
         if caller and caller.get("name") != args.name:
             team = lead = caller["name"]
+    try:
+        meta = _parse_meta_assign(getattr(args, "meta", None))
+    except ValueError as e:
+        return _err(str(e))
     db.register(args.name, agent_type=args.type, role=args.role,
                 workspace=args.workspace, cwd=args.cwd, initial_prompt=args.prompt,
                 identity_path=args.identity, session_id=args.session_id,
-                team=team)
+                team=team, meta=meta or None)
     db.set_archived(args.name, False)  # (re-)registering reactivates an archived agent
     home.ensure_home(args.name, cwd=args.cwd, agent_type=args.type,
                      identity_path=args.identity, initial_prompt=args.prompt,
@@ -148,6 +191,34 @@ def cmd_team(args):
     db.set_team(args.name, args.team if args.op == "add" else None)
     cur = db.get(args.name).get("team")
     print(f"agents: '{args.name}' team: {cur or '(none)'}")
+    return 0
+
+
+def cmd_meta(args):
+    """Get/set/remove an agent's structured metadata — a JSON object of queryable
+    keys (pr, issue, project, …) that resolve agent <-> issue <-> PR without
+    encoding it in the name. `set` merges key=value pairs (preserving the rest);
+    `rm` drops keys; `get` prints the object."""
+    import json
+    if not db.get(args.name):
+        return _err(f"'{args.name}' is not a registered agent")
+    if args.op == "get":
+        print(json.dumps(db.meta_of(db.get(args.name)), indent=2))
+        return 0
+    if args.op == "rm":
+        if not args.items:
+            return _err("usage: agents meta rm <name> <key>...")
+        db.remove_meta(args.name, [k.split("=", 1)[0].strip() for k in args.items])
+    else:  # set
+        try:
+            updates = _parse_meta_assign(args.items)
+        except ValueError as e:
+            return _err(str(e))
+        if not updates:
+            return _err("usage: agents meta set <name> key=value...")
+        db.set_meta(args.name, updates)
+    cur = db.meta_of(db.get(args.name))
+    print(f"agents: '{args.name}' meta: {json.dumps(cur) if cur else '(none)'}")
     return 0
 
 
@@ -285,12 +356,26 @@ def _resolve_known_session(target):
     return None, None, None
 
 
-def _host_key(reg, team_override=None):
-    """The tmux session an agent colocates in: its team (lead + reports share one
-    session), or an explicit team when bringing a whole team up. None → the host
-    gives it a standalone session (`agents-<name>`). Groups are labels, not
-    sessions, so they never key the host."""
-    return team_override or (reg.get("team") if reg else None)
+def _host_key(reg, host, team_override=None):
+    """The host grouping an agent colocates into — a tmux session or a herdr
+    workspace. An explicit --team always wins. Otherwise the two hosts differ:
+
+    - **tmux** colocates by *team* — a lead and its reports share the lead's
+      session; a teamless agent gets its own standalone session (`agents-<name>`).
+    - **herdr** gives each **lead its own space** and each **report a tab** in its
+      lead's space, so a lead (or a teamless agent) keys to its own *name*, and a
+      report keys to its *team* (its lead's space).
+
+    Groups are labels, not sessions, so they never key the host."""
+    if team_override:
+        return team_override
+    if reg is None:
+        return None
+    if getattr(host, "name", None) == "herdr":
+        if reg.get("type") == "lead" or not reg.get("team"):
+            return reg.get("name")          # lead / teamless → its own space
+        return reg.get("team")              # report → a tab in its lead's space
+    return reg.get("team")                  # tmux: the team is the session
 
 
 def _up_one(name, host, prompt=None, cwd=None, identity=None, inject=True,
@@ -316,7 +401,7 @@ def _up_one(name, host, prompt=None, cwd=None, identity=None, inject=True,
     home.ensure_home(name, cwd=acwd, identity_path=identity,
                      initial_prompt=prompt or reg.get("initial_prompt"),
                      session_id=reg.get("session_id"))  # carry an adopted binding into the home
-    group = _host_key(reg, team)  # tmux session key: the team (colocation), not groups
+    group = _host_key(reg, host, team)  # host colocation key (tmux session / herdr space)
 
     resume_id = home.read_session_id(name)
     if resume_id:
@@ -366,11 +451,12 @@ def _one_target(args):
     selector is --group, --type, or --team (short -g / -t for team).
     """
     selector = (getattr(args, "group", None) or getattr(args, "type", None)
-                or getattr(args, "team", None))
+                or getattr(args, "team", None) or getattr(args, "meta", None))
     if args.name and selector:
         return "specify an agent name OR a selector, not both"
     if not args.name and not selector:
-        return "specify an agent name or a selector (-g <group>, -t <team>, --type)"
+        return ("specify an agent name or a selector "
+                "(-g <group>, -t <team>, --type, --meta key[=value])")
     return None
 
 
@@ -383,21 +469,92 @@ def _selection(args):
         return None, err
     if args.name:
         return [args.name], None
+    meta_q = _parse_meta_query(getattr(args, "meta", None))
     rows = db.select(group=args.group, agent_type=getattr(args, "type", None),
-                     team=getattr(args, "team", None))
+                     team=getattr(args, "team", None), meta=meta_q or None)
     if not rows:
         return None, "no agents match that selection"
     return [r["name"] for r in rows], None
 
 
+def _detach_host(pty):
+    """The host a detached/attached `up` uses: the configured host if it can host a
+    detached pane (tmux/herdr), else tmux. `foreground` can't, so it falls back."""
+    return pty if hosts.get(pty).group else "tmux"
+
+
+def _resolve_host(args, n_targets):
+    """Pick the host for this `up`, whether to attach after, and a note if a request
+    had to be overridden. Returns (host, attach, note).
+
+    No flag → the configured `up_mode` (foreground | detach | attach). The flags
+    override it: `--host` names the host outright, `-F` forces foreground, `-d`
+    forces a detached pty host, `-a` a detached pty host it then attaches to.
+    Guardrails win last: foreground needs a controlling terminal and runs one agent,
+    so a selection of agents or no tty (a script, or an agent spawning a report via
+    a tool — neither has a tty) forces a detached pty host instead. A real terminal
+    is enough even inside a Claude session, so we gate on the tty, not the caller."""
+    cfg = config.load()
+    pty = cfg["host"]
+    want_attach = False
+    if getattr(args, "host", None):
+        host_name = args.host
+        want_attach = bool(getattr(args, "attach", False))
+    elif getattr(args, "foreground", False):
+        host_name = "foreground"
+    elif getattr(args, "detach", False):
+        host_name = _detach_host(pty)
+    elif getattr(args, "attach", False):
+        host_name, want_attach = _detach_host(pty), True
+    elif cfg.get("up_mode") == "detach":
+        host_name = _detach_host(pty)
+    elif cfg.get("up_mode") == "attach":
+        host_name, want_attach = _detach_host(pty), True
+    else:  # foreground (the default up_mode)
+        host_name = "foreground"
+
+    note = None
+    selection = n_targets > 1 or bool(getattr(args, "team", None)
+                                      or getattr(args, "group", None)
+                                      or getattr(args, "type", None))
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if host_name == "foreground" and (selection or not interactive):
+        why = ("it's a selection of agents" if selection
+               else "there's no terminal to run it in")
+        host_name, want_attach = _detach_host(pty), False
+        note = f"can't run foreground ({why}); detached on {host_name}"
+    if want_attach and (host_name == "foreground" or not interactive):
+        want_attach = False  # already inline, or nothing here to attach to
+    return hosts.get(host_name), want_attach, note
+
+
+def _attach_after_up(name, host):
+    """Attach to an agent that `up -a` just started on a pty host. tmux attach
+    execs (replaces this process); herdr focuses its tab."""
+    time.sleep(0.3)  # let the pane/tab register before we hand off
+    if host.name == "tmux":
+        _attach_live_window(host, name)  # execs on success; returns False if not found
+        return _err(f"'{name}' started but no tmux window was found to attach")
+    try:
+        host.attach(name, group=_host_key(db.get(name), host))
+    except (hosts.Unsupported, RuntimeError) as e:
+        return _err(str(e))
+    return 0
+
+
 def cmd_up(args):
-    host = _host(args)
     names, err = _selection(args)
     if err:
         return _err(err)
+    host, attach, note = _resolve_host(args, len(names))
+    if note:
+        print(f"agents: {note}", file=sys.stderr)
     if args.name:  # a bare name keeps prompt/cwd/identity and may start anew
-        return _up_one(args.name, host, prompt=args.prompt, cwd=args.cwd,
-                       identity=args.identity, inject=not args.no_inject)
+        rc = _up_one(args.name, host, prompt=args.prompt, cwd=args.cwd,
+                     identity=args.identity, inject=not args.no_inject)
+        if rc == 0 and attach:
+            return _attach_after_up(args.name, host)
+        return rc
     if not host.group:
         return _err(f"{host.name} can't bring up a selection — use --host tmux")
     # `up --team X` colocates the lead + its reports in one tmux session named X,
@@ -503,7 +660,7 @@ def _attach_detach(args, op):
         return _err("specify an agent name OR --team, not both")
     if not team and not args.name:
         return _err("specify an agent name or --team <team>")
-    key = team if team else (db.get(args.name) or {}).get("team")
+    key = _host_key(db.get(args.name), host, team)
     try:
         getattr(host, op)(None if team else args.name, group=key)
     except (hosts.Unsupported, RuntimeError) as e:
@@ -538,7 +695,7 @@ def _await_stopped(sid, timeout=4.0):
 
 def _ensure_stopped_for_restart(name, force):
     """Shared gate for ops that restart an agent's session in place (attach into
-    tmux, rename): such an op interrupts a live agent, so it refuses unless forced.
+    a host, rename): such an op interrupts a live agent, so it refuses unless forced.
     Returns (status, sid):
       'ok'          — not running (or no session); proceed.
       'stopped'     — was running; --force stopped it; proceed.
@@ -554,13 +711,13 @@ def _ensure_stopped_for_restart(name, force):
     return ("stopped" if _await_stopped(sid) else "stuck"), sid
 
 
-def _promote_to_tmux(name, host, team):
-    """Make a live-but-not-tmux agent attachable: stop its current process and
-    resume the same session inside a tmux window (its team's session, or a
-    standalone one). Lossless — we hold the sessionId, so `up --resume` reattaches
-    the exact transcript. You cannot bind a second terminal to an already-running
-    foreground process, so moving it is the honest way to keep the 'up ⇒
-    attachable' invariant."""
+def _promote_to_host(name, host, team):
+    """Make a live agent attachable on `host`: stop its current process and resume
+    the same session there — a tmux window or a herdr tab, in its team's session/
+    workspace or a standalone one. Lossless — we hold the sessionId, so `up
+    --resume` reattaches the exact transcript. You cannot bind a second terminal to
+    a process already running elsewhere, so moving it is the honest way to keep the
+    'up ⇒ attachable' invariant across hosts."""
     sid, _ = _resolve_target(name)
     if sid:
         try:
@@ -568,8 +725,8 @@ def _promote_to_tmux(name, host, team):
         except native.SessionNotFound:
             rec = None
         if rec and rec.get("pid"):
-            print(f"agents: '{name}' is running outside tmux (pid {rec['pid']}); "
-                  f"moving it into a tmux window (resuming {sid[:8]})…")
+            print(f"agents: '{name}' is running elsewhere (pid {rec['pid']}); "
+                  f"moving it into {host.name} (resuming {sid[:8]})…")
             try:
                 os.kill(rec["pid"], 15)  # SIGTERM; the session resumes from disk
             except ProcessLookupError:
@@ -577,7 +734,7 @@ def _promote_to_tmux(name, host, team):
             if not _await_stopped(sid):
                 return _err(f"'{name}' did not stop in time — run `agents down "
                             f"{name}` then `agents attach {name}`.")
-    return _up_one(name, host, inject=False, team=team)  # resume detached in tmux
+    return _up_one(name, host, inject=False, team=team)  # resume detached on host
 
 
 def _attach_live_window(host, name):
@@ -600,35 +757,38 @@ def _attach_live_window(host, name):
 
 def cmd_attach(args):
     host = _host(args)
-    # A whole-team attach, or a non-tmux host (herdr/foreground manages its own
-    # panes): defer straight to the host's attach.
-    if getattr(args, "team", None) or host.name != "tmux":
+    # A whole-team attach: the host opens the team's session/workspace as a unit.
+    if getattr(args, "team", None):
         return _attach_detach(args, "attach")
     if not args.name:
         return _err("specify an agent name or --team <team>")
-    # Already live in a tmux pane somewhere? Attach to its real window.
-    if _attach_live_window(host, args.name):
-        return 0  # unreachable: attach_window execs
-    # Not in any tmux pane: it's live-but-foreground/adopted (restart to move it
-    # in) or down (just bring it up). Restarting a live agent interrupts it, so
-    # refuse unless --force (the same gate `rename` uses).
-    status, _ = _ensure_stopped_for_restart(args.name, getattr(args, "force", False))
+    name = args.name
+    key = _host_key(db.get(name), host)  # its tmux session / herdr space
+    # Already attachable on this host? tmux: a live pane found by pid (execs into
+    # it). herdr: an existing tab to focus. Either way, no restart.
+    if host.name == "tmux":
+        if _attach_live_window(host, name):
+            return 0  # unreachable: attach_window execs
+    elif host.has_window(name, group=key):
+        return _attach_detach(args, "attach")
+    # Not on this host: live elsewhere (another host, or foreground/adopted) → move
+    # it in, which restarts it, so refuse unless --force (the shared gate `rename`
+    # uses); or down → just resume it here. Moving is lossless (resume by id).
+    status, _ = _ensure_stopped_for_restart(name, getattr(args, "force", False))
     if status == "needs_force":
-        return _err(f"'{args.name}' is running outside tmux; attaching restarts it. "
-                    f"`agents send {args.name} ...` to message it without "
-                    f"interrupting, or `agents attach -f {args.name}` to move it "
-                    f"into tmux.")
+        return _err(f"'{name}' is running elsewhere; attaching moves (restarts) it "
+                    f"into {host.name}. `agents send {name} ...` to message it "
+                    f"without interrupting, or `agents attach -f {name}` to move it.")
     if status == "stuck":
-        return _err(f"'{args.name}' did not stop in time — run `agents down "
-                    f"{args.name}` then `agents attach {args.name}`.")
-    key = (db.get(args.name) or {}).get("team")  # colocate into its team session
-    rc = _promote_to_tmux(args.name, host, key)
+        return _err(f"'{name}' did not stop in time — run `agents down "
+                    f"{name}` then `agents attach {name}`.")
+    rc = _promote_to_host(name, host, key)
     if rc != 0:
         return rc
-    time.sleep(0.3)  # let the new pane register before we hand off to tmux
-    if _attach_live_window(host, args.name):
+    time.sleep(0.3)  # let the new pane/tab register before we hand off
+    if host.name == "tmux" and _attach_live_window(host, name):
         return 0
-    return _attach_detach(args, "attach")  # fallback: team/standalone naming
+    return _attach_detach(args, "attach")  # focus the new herdr tab / tmux session
 
 
 def cmd_detach(args):
@@ -654,7 +814,24 @@ _ALL_TEAMS = "*"  # `ls -t` with no value: tree of every team
 
 # (field key, header, max width) in display order: NAME SESSION STATUS TYPE GROUPS DESC
 _LS_COLS = [("name", "NAME", 28), ("sid", "SESSION", 8), ("status", "STATUS", 8),
-            ("type", "TYPE", 8), ("groups", "GROUPS", 20), ("desc", "DESC", 44)]
+            ("type", "TYPE", 6), ("groups", "GROUPS", 16), ("meta", "META", 30),
+            ("desc", "DESC", 40)]
+
+_META_ORDER = ("project", "issue", "pr", "epics")   # the common keys lead
+
+
+def _fmt_meta(meta):
+    """Metadata as compact `key: value` pairs for the ls column (not JSON) —
+    e.g. 'project: ol  pr: 123  issue: 122'. Lists (epics) join on commas."""
+    if not meta:
+        return ""
+    keys = ([k for k in _META_ORDER if k in meta]
+            + sorted(k for k in meta if k not in _META_ORDER))
+    parts = []
+    for k in keys:
+        v = meta[k]
+        parts.append(f"{k}: {','.join(str(x) for x in v) if isinstance(v, list) else v}")
+    return "  ".join(parts)
 
 
 def _trunc(s, n):
@@ -713,18 +890,43 @@ def cmd_ls(args):
     """List agents and every active session. Registered agents (any status) plus
     live Claude sessions that aren't registered — because anything that's `up` is
     addressable (`send -s <id>`). The DESC column is the session's AI title (or a
-    registered agent's task). `-t`/`--team` switches to a tree view (reports nested
-    under their lead); narrowing to a registered subset (-g/--type/--down/
-    --archived) drops the unregistered sessions, which have none of those."""
-    team_mode = args.team is not None
+    registered agent's task). The default is a tree (reports nested under their
+    lead; loose live sessions as roots); `--flat` lists them in a flat table.
+    `-t <team>` narrows to one team, and narrowing to a registered subset
+    (-g/--type/--down/--archived) drops the unregistered sessions."""
+    tree = not getattr(args, "flat", False)
     specific = args.team if args.team not in (None, _ALL_TEAMS) else None
     show_archived = args.all or args.archived
+    meta_q = _parse_meta_query(getattr(args, "meta", None))
     agents = db.select(group=args.group, agent_type=args.type, team=specific,
-                       include_archived=show_archived)
+                       include_archived=show_archived, meta=meta_q or None)
     live = {r.get("sessionId"): r for r in native.list_sessions()}
+
+    if getattr(args, "json", False):
+        import json as _json
+        for a in agents:
+            sid = a.get("session_id")
+            status = ("archived" if a.get("archived")
+                      else "up" if sid in live else "down")
+            if args.running and status != "up":
+                continue
+            if args.down and status != "down":
+                continue
+            if args.archived and status != "archived":
+                continue
+            print(_json.dumps({
+                "name": a["name"], "type": a.get("type") or None,
+                "team": a.get("team") or None, "groups": db.groups_of(a),
+                "session_id": sid, "status": status,
+                "cwd": a.get("cwd"), "desc": a.get("role"),
+                "recap": a.get("recap"), "meta": db.meta_of(a),
+            }))
+        return 0
+
     titles = {r["session_id"]: r["title"]
               for r in history.find_sessions(include_gone=True)}
-    narrowed = bool(args.group or args.type or specific or args.down or args.archived)
+    narrowed = bool(args.group or args.type or specific or args.down
+                    or args.archived or meta_q)
 
     entries, bound = [], set()
     for a in agents:
@@ -738,14 +940,20 @@ def cmd_ls(args):
             continue
         if args.archived and status != "archived":
             continue
-        desc = titles.get(sid) or (home.initial_prompt(a["name"]) or "")
+        # The one-liner says "where this agent is", freshest first: an agent-set
+        # recap, else the operator's purpose (role), else its task, and only as a
+        # last resort the Claude transcript title (which for recovered agents is
+        # often a stale cmux message, not a useful description).
+        desc = (a.get("recap") or a.get("role")
+                or home.initial_prompt(a["name"]) or titles.get(sid) or "")
         entries.append({"status": status, "name": a["name"], "sid": (sid or "")[:8],
                         "type": a.get("type") or "", "groups": ",".join(db.groups_of(a)),
+                        "meta": _fmt_meta(db.meta_of(a)),
                         "desc": desc, "team": a.get("team") or ""})
 
-    # Flat view also lists live sessions that aren't registered agents (team view
-    # is a registry structure, so it shows only registered agents).
-    if not team_mode and not narrowed:
+    # Also list live sessions that aren't registered agents (as tree roots, or
+    # flat rows) — unless we're narrowing the registry, which they can't match.
+    if not narrowed:
         ignored = db.ignored_sessions()
         for sid, rec in live.items():
             if sid in bound:
@@ -757,13 +965,13 @@ def cmd_ls(args):
             entries.append({"status": "archived" if archived else "up",
                             "name": rec.get("name") or "—",
                             "sid": (sid or "")[:8], "type": "", "groups": "",
-                            "desc": desc, "team": ""})
+                            "meta": "", "desc": desc, "team": ""})
 
     if not entries:
-        print("agents: no agents match" if (narrowed or args.running or team_mode)
+        print("agents: no agents match" if (narrowed or args.running)
               else "agents: none registered")
         return 0
-    _print_rows(_tree_rows(entries) if team_mode else entries)
+    _print_rows(_tree_rows(entries) if tree else entries)
     return 0
 
 
@@ -891,6 +1099,365 @@ def cmd_whoami(args):
     return 0
 
 
+def _ago(iso):
+    """A compact 'how long ago' for an ISO-8601 Z timestamp (e.g. '3h', '2d')."""
+    if not iso:
+        return ""
+    import calendar
+    try:
+        t = calendar.timegm(time.strptime(iso, "%Y-%m-%dT%H:%M:%SZ"))  # struct is UTC
+    except (ValueError, TypeError):
+        return ""
+    s = max(0, int(time.time() - t))
+    for n, unit in ((86400, "d"), (3600, "h"), (60, "m")):
+        if s >= n:
+            return f"{s // n}{unit}"
+    return f"{s}s"
+
+
+def cmd_checkin(args):
+    """Record a short recap of where an agent is — opt-in, agent-driven, never
+    computed. By default the *calling* agent checks itself in (resolved from
+    $CLAUDE_CODE_SESSION_ID, like whoami); --agent names another. The line is
+    stored (with a timestamp) and appended to the home's recap.log journal."""
+    name = args.agent
+    if not name:
+        reg = _caller_agent()
+        if not reg:
+            return _err("not a registered agent — run from an agent session, or "
+                        "name one with --agent <name>")
+        name = reg["name"]
+    if not db.get(name):
+        return _err(f"'{name}' is not a registered agent")
+    text = " ".join(args.text).strip()
+    if not text:
+        return _err("usage: agents checkin [--agent NAME] <recap text>")
+    ts = db.set_recap(name, text)
+    home.append_recap(name, text, ts)
+    print(f"agents: '{name}' recap set — {text}")
+    return 0
+
+
+def cmd_more(args):
+    """The full record for one agent — everything the system holds, beyond the
+    scannable `ls` line: purpose, recap, task, home, cwd, session, meta, status."""
+    reg = db.get(args.name)
+    if not reg:
+        return _err(f"'{args.name}' is not a registered agent")
+    name = reg["name"]
+    sid = reg.get("session_id")
+    live = {r.get("sessionId") for r in native.list_sessions()}
+    status = ("archived" if reg.get("archived")
+              else "up" if sid in live else "down")
+    hd = home.home_dir(name)
+    info = {
+        "name": name, "type": reg.get("type"), "team": reg.get("team"),
+        "groups": db.groups_of(reg), "status": status,
+        "desc": reg.get("role"), "recap": reg.get("recap"),
+        "recap_at": reg.get("recap_at"), "initial_prompt": home.initial_prompt(name),
+        "home": hd if os.path.isdir(hd) else None,
+        "cwd": reg.get("cwd") or home.agent_cwd(name),
+        "session_id": sid, "meta": db.meta_of(reg),
+    }
+    if args.json:
+        import json as _json
+        print(_json.dumps(info))
+        return 0
+    print(f"{name}  [{status}]"
+          + (f"  type {info['type']}" if info["type"] else "")
+          + (f"  team {info['team']}" if info["team"] else ""))
+    if info["groups"]:
+        print(f"  groups   {','.join(info['groups'])}")
+    if info["desc"]:
+        print(f"  desc     {info['desc']}")
+    if info["recap"]:
+        when = _ago(info["recap_at"])
+        print(f"  recap    {info['recap']}" + (f"  ({when} ago)" if when else ""))
+    if info["meta"]:
+        import json as _json
+        print(f"  meta     {_json.dumps(info['meta'])}")
+    print(f"  cwd      {info['cwd']}")
+    print(f"  home     {info['home'] or '(none)'}")
+    print(f"  session  {sid or '(unbound)'}")
+    if info["initial_prompt"]:
+        print(f"  task     {info['initial_prompt'].strip().splitlines()[0][:72]}")
+    hist = home.recap_log(name, limit=5)
+    if len(hist) > 1:
+        print("  history:")
+        for ts, text in hist[:-1]:
+            print(f"    {_ago(ts):>4} ago  {text}")
+    return 0
+
+
+def _transcript_for(name):
+    """Locate an agent's Claude transcript (.jsonl): the cwd's project dir first,
+    then any project dir (an agent whose cwd moved). Returns a path or None."""
+    reg = db.get(name)
+    if not reg:
+        return None
+    sid = reg.get("session_id") or home.read_session_id(name)
+    if not sid:
+        return None
+    cwd = reg.get("cwd") or home.agent_cwd(name) or home.home_dir(name)
+    p = history.transcript_path(cwd, sid)
+    if os.path.exists(p):
+        return p
+    import glob
+    hits = glob.glob(os.path.join(session.PROJECTS_DIR, "*", f"{sid}.jsonl"))
+    return hits[0] if hits else None
+
+
+def _render_transcript_line(r):
+    """A transcript event as a compact human line, or None to skip it (mode flags,
+    titles, etc.). Defensive — unknown shapes fall back to a short raw blob."""
+    t = r.get("type")
+    if t not in ("user", "assistant"):
+        return None
+    content = (r.get("message") or {}).get("content")
+    parts = []
+    if isinstance(content, str):
+        parts.append(content)
+    elif isinstance(content, list):
+        for b in content:
+            bt = b.get("type")
+            if bt == "text":
+                parts.append(b.get("text", ""))
+            elif bt == "thinking":
+                parts.append("💭 " + (b.get("thinking", "")[:80]))
+            elif bt == "tool_use":
+                parts.append(f"⚙ {b.get('name', 'tool')}")
+            elif bt == "tool_result":
+                parts.append("↩ tool_result")
+    text = " ".join(p.strip() for p in parts if p and p.strip())
+    text = " ".join(text.split())  # collapse whitespace/newlines
+    if not text:
+        return None
+    role = "you" if t == "user" else "asst"
+    return f"{role}: {text[:200]}"
+
+
+def cmd_session(args):
+    """Tail (or head) an agent's Claude session transcript. Human-rendered by
+    default (role: text, one line per turn), --raw for the exact JSONL. --tail
+    (default) shows the last N, --head the first N, -f follows live. Works whether
+    the agent is up or down — it reads the transcript file, not the live pane (that
+    is what `attach` is for)."""
+    path = _transcript_for(args.name)
+    if not path:
+        if not db.get(args.name):
+            return _err(f"'{args.name}' is not a registered agent")
+        return _err(f"'{args.name}' has no transcript yet "
+                    "(it hasn't run, or its session isn't bound)")
+    import json as _json
+    n = args.lines
+
+    def rendered(line):
+        """The display form of a raw JSONL line, or None to drop it. In --raw mode
+        every line is kept verbatim; otherwise only message turns, humanized."""
+        if args.raw:
+            return line.rstrip("\n")
+        try:
+            return _render_transcript_line(_json.loads(line))
+        except (ValueError, TypeError):
+            return None
+
+    if args.follow:
+        # Stream new events as they're appended (Ctrl-C to stop).
+        with open(path) as f:
+            f.seek(0, os.SEEK_END)
+            try:
+                while True:
+                    line = f.readline()
+                    if not line:
+                        time.sleep(0.3)
+                        continue
+                    out = rendered(line)
+                    if out is not None:
+                        print(out)
+            except KeyboardInterrupt:
+                return 0
+    # Render/filter first, THEN take head/tail — so -n counts shown lines (e.g.
+    # conversation turns), not raw events, which often trail off into metadata.
+    with open(path) as f:
+        shown = [out for out in (rendered(line) for line in f) if out is not None]
+    for out in (shown[:n] if args.head else shown[-n:]):
+        print(out)
+    return 0
+
+
+def cmd_schema(args):
+    """Show the registry schema version, applying any pending migrations first.
+    `agents upgrade` runs this against the freshly installed code so migrations
+    land as part of the upgrade."""
+    old, new = db.migrate_now()
+    if new > old:
+        print(f"agents: schema migrated v{old} → v{new}")
+    else:
+        print(f"agents: schema at v{new} (up to date)")
+    return 0
+
+
+def _subparser_map(parser):
+    """The {name: subparser} map for a built top-level parser (incl. aliases)."""
+    for a in parser._actions:
+        if isinstance(a, argparse._SubParsersAction):
+            return a.choices
+    return {}
+
+
+def _undent(doc):
+    """A command docstring with its 4-space body indentation removed."""
+    return "\n".join(l[4:] if l.startswith("    ") else l
+                     for l in (doc or "").strip().splitlines())
+
+
+def _man_overview():
+    from agents import manuals
+    return "\n".join([
+        "agents — manuals",
+        "",
+        "Run `agents man <command>` to learn a command well: its flags (read live",
+        "from the tool, so always current), what it's for, the conventions, and",
+        "worked examples. Recommended before you first use a command.",
+        "",
+        "CONCEPTS",
+        "  agents man herdr        workspaces & tabs (leads vs. adas)",
+        "  agents man conventions  naming → type, and where each fact lives",
+        "  agents man recap        keeping status current with `checkin`",
+        "",
+        "COMMANDS WITH MANUALS",
+        "  " + "  ".join(manuals.CORE),
+        "",
+        manuals.ISSUE_NUDGE,
+    ])
+
+
+def cmd_man(args):
+    """Comprehensive manual for a command (or concept): its synopsis and flags —
+    read live from the parser so they never drift — plus authored conventions and
+    worked examples. `agents man` with no argument prints the concept overview."""
+    import textwrap
+    from agents import manuals
+    topic = args.topic
+    if not topic:
+        print(_man_overview())
+        return 0
+    if topic in manuals.TOPICS:
+        print(manuals.TOPICS[topic])
+        print("\n" + manuals.ISSUE_NUDGE)
+        return 0
+    sub = _subparser_map(build_parser())
+    if topic not in sub:
+        return _err(f"no manual for '{topic}'. Try `agents man` for the index, a "
+                    "command name, or a concept (herdr, conventions, recap).")
+    sp = sub[topic]
+    func = sp.get_default("func")
+    print(f"agents {topic}")
+    if func and func.__doc__:
+        print("\n" + _undent(func.__doc__))
+    print("\n" + sp.format_help().rstrip())       # live synopsis + options
+    man = manuals.MANUALS.get(topic)
+    if man:
+        if man.get("best"):
+            print("\nBEST PRACTICES\n" + textwrap.fill(
+                man["best"], width=78, initial_indent="  ", subsequent_indent="  "))
+        if man.get("examples"):
+            print("\nEXAMPLES")
+            for cmd, comment in man["examples"]:
+                print(f"  {cmd}")
+                if comment:
+                    print(f"      ⤷ {comment}")
+        if man.get("see_also"):
+            print("\nSEE ALSO  "
+                  + "  ".join(f"agents man {s}" for s in man["see_also"]))
+    else:
+        print("\n(No worked examples authored yet — `agents man` lists the "
+              "concepts. If you'd find examples here useful, that's worth an issue.)")
+    print("\n" + manuals.ISSUE_NUDGE)
+    return 0
+
+
+def cmd_snapshot(args):
+    """Force-write the JSON snapshot of the registry now (normally refreshed
+    lazily, at most hourly). The non-sqlite backup `reindex` can rebuild from."""
+    path = db.snapshot()
+    print(f"agents: snapshot written → {path}")
+    return 0
+
+
+def cmd_reindex(args):
+    """Rebuild the sqlite registry from the JSON snapshot — recovery for a lost or
+    corrupt agents.db. The snapshot is at most ~an hour old, so changes since the
+    last snapshot are not in it (it prints the snapshot's age so you can judge)."""
+    import json as _json
+    try:
+        with open(db.SNAPSHOT_PATH) as f:
+            when = _json.load(f).get("written_at")
+    except OSError:
+        return _err(f"no snapshot at {db.SNAPSHOT_PATH} — nothing to reindex from")
+    n_agents, n_ignored = db.reindex_from_snapshot()
+    age = _ago(when)
+    print(f"agents: reindexed {n_agents} agent(s), {n_ignored} tombstone(s) "
+          f"from snapshot written {when}" + (f" ({age} ago)" if age else ""))
+    return 0
+
+
+def cmd_whois(args):
+    """Resolve a registry name to its live Claude-land SendMessage address.
+
+    The name you give an agent (its registry name) is NOT the name Claude
+    advertises natively — that one derives from the session's cwd and rotates, so
+    `SendMessage`/`ListAgents` can't resolve the registry name directly. The
+    sessionId is the stable join key: the registry binds registry-name -> sessionId,
+    and Claude writes a live session record (name, formerNames, messagingSocketPath)
+    keyed by that same sessionId. This walks name -> sessionId -> that record and
+    prints the address `SendMessage` actually resolves, computed live so a rotation
+    or rebind can't make it stale. `agents send <name>` remains the guaranteed
+    channel; this is the bridge for when an agent wants to use `SendMessage` itself.
+    """
+    import json
+    sid, _ = _resolve_target(args.name)
+    rec = None
+    if sid:
+        try:
+            rec = native.resolve(sid)
+        except native.SessionNotFound:
+            rec = None
+    if rec is None:
+        # A registered agent that's down (or never bound) has no SendMessage target
+        # yet; anything else is just unknown.
+        if not db.get(args.name):
+            return _err(f"'{args.name}' is not a registered agent or live session")
+        if args.json:
+            print(json.dumps({"name": args.name, "session_id": sid, "live": False,
+                              "meta": db.meta_of(db.get(args.name))}))
+        else:
+            print(f"{args.name}: registered but not live — no SendMessage target "
+                  f"until it's up. `agents send {args.name}` will deliver once it is.")
+        return 1
+    sock = rec.get("messagingSocketPath") or ""
+    to = f"uds:{sock}" if sock else rec.get("name")
+    if args.json:
+        reg = db.get(args.name)
+        print(json.dumps({
+            "name": args.name, "session_id": rec.get("sessionId"),
+            "claude_name": rec.get("name"),
+            "former_names": rec.get("formerNames") or [],
+            "sendmessage_to": to, "socket": sock,
+            "pid": rec.get("pid"), "status": rec.get("status"), "live": True,
+            "meta": db.meta_of(reg) if reg else {},
+        }))
+        return 0
+    print(f"{args.name} → SendMessage to: {to!r}")
+    former = rec.get("formerNames") or []
+    print(f"  claude name   {rec.get('name')}"
+          + (f"  (was: {', '.join(map(str, former))})" if former else ""))
+    print(f"  session       {rec.get('sessionId')}")
+    print(f"  pid/status    {rec.get('pid')}  {rec.get('status')}")
+    print(f"  guaranteed    agents send {args.name} \"...\"")
+    return 0
+
+
 def cmd_rm(args):
     """Remove (archive) an agent OR an unregistered session. For an agent: hidden
     from `ls` but kept (`ls -a` to see it, `up`/`register` to restore); --purge
@@ -913,6 +1480,13 @@ def _rm_agent(args):
         db.set_archived(args.name, False)
         print(f"agents: restored '{args.name}'")
         return 0
+    # Archiving or purging retires the agent, so stop it first if it is live —
+    # otherwise `rm` leaves a hidden-but-running orphan the archived row no longer
+    # lists. This is the inverse of `up` (which unarchives + launches), and it is
+    # lossless: `down` is a SIGTERM and the session resumes from disk on `up`.
+    sid, _ = _resolve_target(args.name)
+    if sid and _is_running(sid):
+        _down_one(args.name)
     if args.purge:
         db.remove(args.name)
         print(f"agents: purged '{args.name}' from the registry "
@@ -1017,6 +1591,14 @@ def cmd_upgrade(args):
     so a fix can be validated on one machine without changing what a plain
     `agents upgrade` installs anywhere else.
     """
+    # Always back the registry up first — no matter what. An upgrade shouldn't be
+    # able to lose the table or the data cached in it (recap, meta); this fresh
+    # snapshot is the floor `reindex` can restore from if anything goes wrong.
+    try:
+        print(f"agents: backed up registry → {db.snapshot()}")
+    except OSError as e:
+        print(f"agents: warning — could not snapshot the registry first ({e}); "
+              f"continuing (upgrade does not modify the db)", file=sys.stderr)
     import tempfile
     tmp = tempfile.mkdtemp()
     clonedir = os.path.join(tmp, "agents")
@@ -1047,6 +1629,13 @@ def cmd_upgrade(args):
                     "  UV_VENV_CLEAR=1 UV_NO_CACHE=1 pipx install --force "
                     "git+https://github.com/mekarpeles/agents.git")
     print(f"agents: upgraded to {ver}.")
+    # Apply the new version's schema migrations now. This process still runs the
+    # OLD code, so we shell out to the freshly installed `agents` on PATH — its
+    # MIGRATIONS are the new ones. The pre-upgrade snapshot above is the fallback.
+    mig = subprocess.run(["agents", "schema"], capture_output=True, text=True)
+    out = (mig.stdout or "").strip()
+    if out:
+        print(out)
     return 0
 
 
@@ -1195,8 +1784,15 @@ def cmd_configure(args):
     if args.host:
         cfg["host"] = args.host
     elif not args.no_input:
-        cfg["host"] = _prompt_choice("Default host for launched agents?",
+        cfg["host"] = _prompt_choice("Pty host for attach/detach and -d/-a?",
                                      hosts.CHOICES, cfg["host"])
+
+    if args.up_mode:
+        cfg["up_mode"] = args.up_mode
+    elif not args.no_input:
+        cfg["up_mode"] = _prompt_choice(
+            "How should a bare `up` launch an agent?",
+            config.UP_MODES, cfg.get("up_mode", "foreground"))
 
     if cfg["host"] == "tmux" and not shutil.which("tmux"):
         if (not args.no_input) and _prompt_yes_no(
@@ -1230,6 +1826,7 @@ def cmd_configure(args):
     print(f"  permission mode: {saved['permission_mode']}"
           + ("  (⚠ bypasses all permission checks)" if bypass else ""))
     print(f"  host:            {saved['host']}")
+    print(f"  up mode:         {saved['up_mode']}")
 
     # A child process can't source the rc into the parent shell, so the equivalent
     # of "activate now" is to replace this process with a fresh login shell (which
@@ -1290,7 +1887,17 @@ class _Parser(argparse.ArgumentParser):
 
 
 def build_parser():
-    p = _Parser(prog="agents", description=__doc__.splitlines()[0])
+    p = _Parser(
+        prog="agents",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            __doc__.splitlines()[0]
+            + "\n\n★ Run `agents man <command>` to learn a command's flags, "
+              "conventions, and examples —\n  recommended before first use. "
+              "`agents man` alone covers the core concepts\n  (herdr workspaces, "
+              "naming, metadata)."),
+        epilog=("Confusing, wrong, or did you have to work around the tool? "
+                "Please open an issue:\n  gh issue create -R mekarpeles/agents"))
     # Shorthand so `agents --configure` works like the `configure` subcommand.
     p.add_argument("--configure", action="store_true",
                    help="run interactive configuration (same as `agents configure`)")
@@ -1306,7 +1913,9 @@ def build_parser():
     s.add_argument("--type", default="default",
                    help="agent type seeding AGENTS.md "
                         f"({', '.join(home.available_types())})")
-    s.add_argument("--role")
+    s.add_argument("--role", "--desc", dest="role",
+                   help="operator's one-line description of the agent's purpose "
+                        "(shown by `ls`/`more`)")
     s.add_argument("-g", "--group", dest="workspace",
                    help="group label(s) this agent belongs to; comma-separated for "
                         "several (agents up -g <group>)")
@@ -1317,6 +1926,9 @@ def build_parser():
     s.add_argument("--prompt", help="initial task written to PROMPT.md")
     s.add_argument("--session-id", dest="session_id",
                    help="adopt an existing Claude sessionId (resume it on `up`)")
+    s.add_argument("--meta", action="append", metavar="KEY=VALUE",
+                   help="structured metadata (repeatable), e.g. --meta project=ol "
+                        "--meta issue=14200 --meta pr=14212, or --meta '{...}'")
     s.set_defaults(func=cmd_register)
 
     s = sub.add_parser("group", help="add or remove an agent's group labels")
@@ -1331,6 +1943,13 @@ def build_parser():
     s.add_argument("team", nargs="?", help="lead name (required for add)")
     s.set_defaults(func=cmd_team)
 
+    s = sub.add_parser("meta", help="get/set/remove an agent's structured metadata")
+    s.add_argument("op", choices=["get", "set", "rm"])
+    s.add_argument("name")
+    s.add_argument("items", nargs="*", metavar="KEY=VALUE",
+                   help="set: key=value pairs (or a {json} object); rm: bare keys")
+    s.set_defaults(func=cmd_meta)
+
     s = sub.add_parser("rename", help="rename an agent (home, reports, transcript follow)")
     s.add_argument("old")
     s.add_argument("new")
@@ -1343,8 +1962,20 @@ def build_parser():
     s.add_argument("-g", "--group", help="bring up every agent in this group")
     s.add_argument("-t", "--team", help="bring up a team (its lead + reports)")
     s.add_argument("--type", help="bring up every agent of this type")
+    s.add_argument("--meta", action="append", metavar="KEY[=VALUE]",
+                   help="bring up every agent whose metadata matches (repeatable; "
+                        "e.g. --meta project=ol)")
     s.add_argument("--host", choices=hosts.CHOICES, default=None,
-                   help="pty host (default: the configured host, tmux)")
+                   help="run on this host for this call (overrides -F/-d/-a and "
+                        "the configured up_mode)")
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("-F", "--foreground", action="store_true",
+                   help="run inline in this terminal (no tmux)")
+    g.add_argument("-d", "--detach", action="store_true",
+                   help="start detached in the configured host (tmux/herdr), "
+                        "without attaching")
+    g.add_argument("-a", "--attach", action="store_true",
+                   help="start in the configured host and attach to it now")
     s.add_argument("--prompt")
     s.add_argument("--cwd")
     s.add_argument("--identity")
@@ -1356,6 +1987,8 @@ def build_parser():
     s.add_argument("-g", "--group", help="stop every agent in this group")
     s.add_argument("-t", "--team", help="stop a team (its lead + reports)")
     s.add_argument("--type", help="stop every agent of this type")
+    s.add_argument("--meta", action="append", metavar="KEY[=VALUE]",
+                   help="stop every agent whose metadata matches (e.g. --meta project=ol)")
     s.set_defaults(func=cmd_down)
 
     s = sub.add_parser("attach", aliases=["a"], help="attach to an agent or team")
@@ -1375,18 +2008,26 @@ def build_parser():
     s.set_defaults(func=cmd_detach)
 
     s = sub.add_parser("list", aliases=["ls"],
-                       help="list agents (-t for team/tree view; filter by group/type/status)")
+                       help="list agents (tree by default; --flat for a table; "
+                            "filter by group/type/status)")
     s.add_argument("-g", "--group", help="only agents in this group")
     s.add_argument("-t", "--team", nargs="?", const=_ALL_TEAMS, default=None,
                    metavar="TEAM",
-                   help="team/tree view: reports nested under their lead "
-                        "(optional TEAM limits to one team)")
+                   help="limit the tree to one team (reports under their lead)")
+    s.add_argument("--flat", action="store_true",
+                   help="flat table instead of the default tree view")
     s.add_argument("--type", help="only agents of this type (e.g. lead, ada)")
+    s.add_argument("--meta", action="append", metavar="KEY[=VALUE]",
+                   help="only agents whose metadata has this key (bare KEY) or "
+                        "KEY=VALUE (repeatable; all must match), e.g. --meta pr or "
+                        "--meta project=ol")
     s.add_argument("--running", action="store_true", help="only agents with a live session")
     s.add_argument("--down", action="store_true", help="only stopped agents")
     s.add_argument("-a", "--all", action="store_true",
                    help="include archived agents (hidden by default)")
     s.add_argument("--archived", action="store_true", help="only archived agents")
+    s.add_argument("--json", action="store_true",
+                   help="machine-readable output (one JSON object per agent, incl. meta)")
     s.set_defaults(func=cmd_ls)
 
     s = sub.add_parser("find",
@@ -1418,6 +2059,58 @@ def build_parser():
     s.add_argument("--json", action="store_true", help="machine-readable output")
     s.set_defaults(func=cmd_whoami)
 
+    s = sub.add_parser("whois",
+                       help="resolve a registry name to its live SendMessage address")
+    s.add_argument("name", help="the agent's registry name (or any selector `ls` shows)")
+    s.add_argument("--json", action="store_true", help="machine-readable output")
+    s.set_defaults(func=cmd_whois)
+
+    s = sub.add_parser("checkin",
+                       help="record a short recap of where an agent is (agent-set)")
+    s.add_argument("text", nargs="*", help="the recap line")
+    s.add_argument("--agent", help="check in this agent (default: the calling agent)")
+    s.set_defaults(func=cmd_checkin)
+
+    s = sub.add_parser("more", help="show the full record for one agent")
+    s.add_argument("name")
+    s.add_argument("--json", action="store_true", help="machine-readable output")
+    s.set_defaults(func=cmd_more)
+
+    s = sub.add_parser("session",
+                       help="tail/head an agent's Claude session transcript")
+    s.add_argument("name")
+    s.add_argument("-n", "--lines", type=int, default=20,
+                   help="how many events to show (default 20)")
+    s.add_argument("--head", action="store_true",
+                   help="show the first N events instead of the last")
+    s.add_argument("--tail", action="store_true",
+                   help="show the last N events (the default)")
+    s.add_argument("-f", "--follow", action="store_true",
+                   help="stream new events live (Ctrl-C to stop)")
+    s.add_argument("--raw", action="store_true",
+                   help="exact JSONL lines instead of the human render")
+    s.set_defaults(func=cmd_session)
+
+    s = sub.add_parser("snapshot",
+                       help="force-write the JSON registry snapshot now")
+    s.set_defaults(func=cmd_snapshot)
+
+    s = sub.add_parser("reindex",
+                       help="rebuild the sqlite registry from the JSON snapshot")
+    s.set_defaults(func=cmd_reindex)
+
+    s = sub.add_parser("schema",
+                       help="show/apply the registry schema version (migrations)")
+    s.set_defaults(func=cmd_schema)
+
+    s = sub.add_parser("man",
+                       help="comprehensive manual for a command or concept "
+                            "(flags + conventions + examples)")
+    s.add_argument("topic", nargs="?",
+                   help="a command (register, up, …) or concept "
+                        "(herdr, conventions, recap); omit for the overview")
+    s.set_defaults(func=cmd_man)
+
     s = sub.add_parser("rm", help="archive an agent or an unregistered session "
                                   "(hidden from ls/find, kept)")
     s.add_argument("name", help="an agent name, or a session id/prefix from `find`")
@@ -1447,7 +2140,10 @@ def build_parser():
     s.add_argument("--mode", choices=config.PERMISSION_MODES,
                    help="permission mode launched agents run under "
                         "(default: acceptEdits; bypassPermissions = YOLO)")
-    s.add_argument("--host", choices=hosts.CHOICES, help="default pty host")
+    s.add_argument("--host", choices=hosts.CHOICES,
+                   help="the pty host attach/detach and -d/-a use (tmux/herdr)")
+    s.add_argument("--up-mode", choices=config.UP_MODES,
+                   help="how a bare `up` launches: foreground | detach | attach")
     s.add_argument("--no-input", action="store_true",
                    help="don't prompt; keep current values / accept defaults")
     s.add_argument("--no-reload", action="store_true",
@@ -1484,7 +2180,12 @@ def main():
     if not getattr(args, "cmd", None):
         parser.print_help()
         sys.exit(0)
-    sys.exit(args.func(args))
+    rc = args.func(args)
+    # Keep the non-sqlite backup fresh (lazily, ~hourly) — best-effort, after the
+    # command's real work, so a registry mutation is captured but a failure here
+    # never affects the command's result.
+    db.maybe_snapshot()
+    sys.exit(rc)
 
 
 if __name__ == "__main__":

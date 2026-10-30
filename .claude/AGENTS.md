@@ -67,6 +67,13 @@ Claude config.
   agent is seeded with). Distinct from a running agent's **`PROMPT.md`** (its task).
 - **Work is tracked in GitHub issues**, not in markdown TODOs. If you find a plan
   written into a doc or comment, move it to an issue.
+- **User-facing manuals are `src/agents/manuals.py`, surfaced by `agents man
+  <command>`.** They're the *use*-facing docs (this file and `docs/` are
+  *dev*-facing); the two don't overlap. `man` renders each command's synopsis and
+  flags **live from the argparse parser**, so manuals never restate flags — only
+  the prose (when/why, conventions, examples, gotchas) is authored. **Update a
+  command's manual in the same PR that adds or changes it**; a test asserts every
+  core command has an entry and no manual names a dead command.
 
 ## Gotchas (learned the hard way)
 
