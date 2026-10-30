@@ -1379,6 +1379,31 @@ def test_ls_meta_list_key_stacks_full(env, capsys):
     assert not any("saul" in l for l in lines)           # filtered to epics-havers
 
 
+def test_recap_shows_checkin_history_newest_first(env, capsys):
+    db, cli = env["db"], env["cli"]
+    db.register("dewey", agent_type="lead")
+    for text in ("stepA", "stepB", "stepC"):
+        a = cli.build_parser().parse_args(["checkin", "--agent", "dewey", text])
+        a.func(a)
+    capsys.readouterr()  # drain the checkin confirmations
+    a = cli.build_parser().parse_args(["recap", "dewey"])
+    assert a.func(a) == 0
+    out = capsys.readouterr().out
+    assert "check-ins" in out and "stepA" in out and "stepC" in out
+    assert out.index("stepC") < out.index("stepA")       # newest first
+    a = cli.build_parser().parse_args(["recap", "dewey", "-n", "1"])
+    a.func(a)
+    out2 = capsys.readouterr().out
+    assert "stepC" in out2 and "stepA" not in out2        # -n caps
+
+
+def test_recap_no_checkins(env, capsys):
+    env["db"].register("x", agent_type="ada")
+    a = env["cli"].build_parser().parse_args(["recap", "x"])
+    assert a.func(a) == 0
+    assert "no check-ins" in capsys.readouterr().out
+
+
 def test_ls_desc_prefers_recap_over_role(env, capsys):
     db, cli = env["db"], env["cli"]
     db.register("dewey", agent_type="lead", role="Tags Lead")

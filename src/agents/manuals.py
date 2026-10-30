@@ -76,20 +76,6 @@ MORE META KEYS (established conventions):
 ADA NAMES are task-scoped and track the stable identifier: issue-<N>-<slug> while
 it's issue work, pr-<N>-<slug> once a PR is the unit. Prefer the issue form when no
 PR exists yet, and set meta.pr when the PR opens — no rename needed.""",
-
-    "recap": """\
-recap — keeping "where we are" current, cheaply
-
-A recap is a one-line status an agent sets about ITSELF — opt-in and agent-driven,
-never computed, so it costs no tokens and only ever says what the agent chose to
-record. It's timestamped, and each check-in is also appended to a journal
-(~/.agents/<name>/recap.log), so there's a progress trail without any history
-service.
-
-  agents checkin "builder patched; 2 of 3 commits done, tests green"
-
-Leads should cascade it: check yourself in, ask each report to check in. The
-freshest recap is what `ls` shows in DESC and what `more` shows with its age.""",
 }
 
 # Per-command authored extras. `man <cmd>` always renders the live synopsis +
@@ -215,12 +201,25 @@ MANUALS = {
         see_also=["attach", "find", "more"],
     ),
     "checkin": dict(
-        best="Record where you are — opt-in, agent-set, timestamped, journaled. "
-             "Leads should cascade it to their reports. See `man recap`.",
+        best="Record a recap — where the agent IS now (its status), distinct from "
+             "its description (what it IS, set with register --desc). Opt-in, "
+             "agent-set, timestamped, and journaled to ~/.agents/<name>/recap.log. "
+             "Leads should cascade it to their reports; `agents recap` reads the "
+             "history back.",
         examples=[('agents checkin "2 of 3 commits done; tests green"', "self check-in"),
                   ('agents checkin --agent saul "solr reindex running"',
                    "set another agent's recap")],
         see_also=["recap", "more", "ls"],
+    ),
+    "recap": dict(
+        best="Show an agent's check-in HISTORY (the recap journal) — its status "
+             "over time, distinct from its description (purpose). Set entries with "
+             "`agents checkin`; `ls` shows only the latest (in DESC), `more` shows "
+             "it with its age, and this shows the whole trail.",
+        examples=[("agents recap dewey", "dewey's check-ins, newest first"),
+                  ("agents recap dewey -n 5", "just the 5 most recent"),
+                  ("agents recap", "your own (from an agent session)")],
+        see_also=["checkin", "more", "ls"],
     ),
     "meta": dict(
         best="Structured, queryable metadata. Canonical homes: project, issue, pr, "

@@ -63,6 +63,7 @@ agents send pam "status?"     # message a registered agent
 agents send -s <session> "hi" # …or any live session by id or prefix (no registry)
 agents whois oliver           # resolve a registry name to its live SendMessage address
 agents checkin "tests green"  # record where you are (agent-set recap, timestamped)
+agents recap ada              # an agent's check-in history (its status over time)
 agents meta set ada pr=14212  # structured metadata (project/issue/pr/epics); `meta get` too
 agents group add pam infra    # add/remove group labels (pam may be in many)
 agents team add ada1 agents-lead   # set (or `team rm ada1` to clear) its team
@@ -182,7 +183,10 @@ agents up --meta project=ol --host herdr   # selectors take --meta too
 
 A **recap** is a one-line, agent-set status ("where we are"), recorded with `agents
 checkin "…"`. It's timestamped and journaled (`~/.agents/<name>/recap.log`), and
-it's what `ls` shows in DESC and `agents more <name>` shows with its age.
+it's what `ls` shows in DESC (the *latest* line) and `agents more <name>` shows with
+its age. The **recap is distinct from the description** (`--desc`/role, which is
+*what the agent is*): `agents recap <name>` prints the full check-in history (newest
+first), `agents checkin "…"` adds to it.
 
 ## Library
 

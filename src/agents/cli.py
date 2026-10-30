@@ -1192,6 +1192,28 @@ def cmd_checkin(args):
     return 0
 
 
+def cmd_recap(args):
+    """Show an agent's check-in history — the recap journal (its status over time),
+    distinct from its description (purpose). Defaults to the calling agent; name
+    one, or `-n` to cap how many (newest first)."""
+    name = args.name
+    if not name:
+        reg = _caller_agent()
+        if not reg:
+            return _err("name an agent, or run from an agent session")
+        name = reg["name"]
+    if not db.get(name):
+        return _err(f"'{name}' is not a registered agent")
+    log = home.recap_log(name, limit=args.lines)
+    if not log:
+        print(f"{name}: no check-ins yet (set one with `agents checkin \"…\"`)")
+        return 0
+    print(f"{name} — check-ins (newest first):")
+    for ts, text in reversed(log):
+        print(f"  {(_ago(ts) + ' ago'):<9} {text}")
+    return 0
+
+
 def cmd_more(args):
     """The full record for one agent — everything the system holds, beyond the
     scannable `ls` line: purpose, recap, task, home, cwd, session, meta, status."""
@@ -1377,7 +1399,6 @@ def _man_overview():
         "CONCEPTS",
         "  agents man herdr        workspaces & tabs (leads vs. adas)",
         "  agents man conventions  naming → type, and where each fact lives",
-        "  agents man recap        keeping status current with `checkin`",
         "",
         "COMMANDS WITH MANUALS",
         "  " + "  ".join(manuals.CORE),
@@ -2125,6 +2146,11 @@ def build_parser():
     s.add_argument("text", nargs="*", help="the recap line")
     s.add_argument("--agent", help="check in this agent (default: the calling agent)")
     s.set_defaults(func=cmd_checkin)
+
+    s = sub.add_parser("recap", help="show an agent's check-in history (recap journal)")
+    s.add_argument("name", nargs="?", help="the agent (default: the calling agent)")
+    s.add_argument("-n", "--lines", type=int, help="show only the most recent N")
+    s.set_defaults(func=cmd_recap)
 
     s = sub.add_parser("more", help="show the full record for one agent")
     s.add_argument("name")
