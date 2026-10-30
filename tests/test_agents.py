@@ -329,6 +329,20 @@ def test_up_by_type_fans_out(env, monkeypatch):
     assert sorted(a for a, _ in stub.started) == ["l1", "l2"]   # not 'a1'
 
 
+def test_up_by_meta_fans_out(env, monkeypatch):
+    env["db"].register("a1", meta={"project": "ol"})
+    env["db"].register("a2", meta={"project": "ol"})
+    env["db"].register("b1", meta={"project": "bgp"})
+    stub = _StubHost()
+    monkeypatch.setattr(env["cli"].hosts, "get", lambda _n: stub)
+    rc = env["cli"].cmd_up(type("A", (), {
+        "name": None, "group": None, "type": None, "team": None,
+        "meta": ["project=ol"], "host": "tmux", "prompt": None, "cwd": None,
+        "identity": None, "no_inject": True})())
+    assert rc == 0
+    assert sorted(a for a, _ in stub.started) == ["a1", "a2"]   # not b1
+
+
 def test_up_requires_name_or_group(env):
     rc = env["cli"].cmd_up(type("A", (), {
         "name": None, "group": None, "host": "tmux", "prompt": None,
@@ -507,6 +521,38 @@ def test_rm_purge_deletes_row(env):
     assert db.get("pam") is None
 
 
+def test_rm_downs_a_live_agent_before_archiving(env, monkeypatch, capsys):
+    """Archiving a running agent stops it first, so `rm` never leaves a
+    hidden-but-live orphan. `down` is lossless — the session resumes on `up`."""
+    db, cli = env["db"], env["cli"]
+    db.register("pam", session_id="live-sid")
+    monkeypatch.setattr(env["native"], "resolve", lambda sid: {"pid": 4242})
+    killed = {}
+    monkeypatch.setattr(cli.os, "kill", lambda pid, sig: killed.update(pid=pid, sig=sig))
+
+    a = cli.build_parser().parse_args(["rm", "pam"])
+    assert a.func(a) == 0
+    assert killed == {"pid": 4242, "sig": 15}      # SIGTERM'd before archiving
+    out = capsys.readouterr().out
+    assert "stopped 'pam'" in out and "removed 'pam'" in out
+    assert db.get("pam")["archived"]               # row kept, archived
+
+
+def test_rm_skips_down_when_agent_not_running(env, monkeypatch, capsys):
+    """An already-stopped agent archives without a kill or a spurious message."""
+    db, cli = env["db"], env["cli"]
+    db.register("pam", session_id="dead-sid")
+    monkeypatch.setattr(env["native"], "resolve",
+                        lambda sid: (_ for _ in ()).throw(env["native"].SessionNotFound(sid)))
+    monkeypatch.setattr(cli.os, "kill",
+                        lambda *a, **k: pytest.fail("rm must not SIGTERM a stopped agent"))
+    a = cli.build_parser().parse_args(["rm", "pam"])
+    assert a.func(a) == 0
+    out = capsys.readouterr().out
+    assert "stopped" not in out and "removed 'pam'" in out
+    assert db.get("pam")["archived"]
+
+
 def test_attach_requires_a_target(env):
     a = env["cli"].build_parser().parse_args(["attach"])
     assert a.func(a) == 1  # neither a name nor -g
@@ -540,10 +586,39 @@ def test_attach_promotes_live_nontmux_session(env, monkeypatch):
     monkeypatch.setattr(cli.os, "kill", lambda pid, sig: killed.append((pid, sig)))
 
     host = _StubHost()                   # name == "stub"; start() records
-    rc = cli._promote_to_tmux("ada", host, None)
+    rc = cli._promote_to_host("ada", host, None)
     assert rc == 0
     assert killed == [(999, 15)]         # SIGTERM'd the foreground process
     assert host.started and host.started[0][0] == "ada"  # resumed under the host
+
+
+def test_attach_promotes_down_agent_into_herdr(env, monkeypatch):
+    """`attach <name> --host herdr` on a down agent resumes it on that host (the
+    generalized promote) and then focuses it — the move-into-herdr path, symmetric
+    with the tmux promote but for a non-tmux pty host."""
+    cli, native = env["cli"], env["native"]
+    env["db"].register("wally", cwd="/w", session_id="sid-w", team="oliver")
+    env["home"].ensure_home("wally", cwd="/w")
+    env["home"].write_session_id("wally", "sid-w")
+    monkeypatch.setattr(native, "resolve",
+                        lambda sid: (_ for _ in ()).throw(native.SessionNotFound(sid)))
+    monkeypatch.setattr(env["session"], "transcript_exists", lambda sid, cwd: True)
+
+    class _Herdrish:
+        name = "herdr"; group = True
+        def __init__(self): self.started, self.attached = [], []
+        def has_window(self, agent, group=None): return False      # not a tab yet
+        def start(self, agent, cmd, cwd, e, group=None):
+            from agents import hosts
+            self.started.append((agent, group)); return hosts.Launched(pid=None, proc=None)
+        def attach(self, agent, group=None): self.attached.append((agent, group))
+    h = _Herdrish()
+    monkeypatch.setattr(cli.hosts, "get", lambda _n: h)
+
+    a = cli.build_parser().parse_args(["attach", "wally", "--host", "herdr"])
+    assert a.func(a) == 0
+    assert h.started == [("wally", "oliver")]   # resumed on herdr, team-keyed workspace
+    assert h.attached == [("wally", "oliver")]  # then focused the new tab
 
 
 def test_attach_will_not_kill_live_agent_without_consent(env, monkeypatch):
@@ -1069,3 +1144,475 @@ def test_up_adopts_existing_live_session(env, monkeypatch):
     assert host.started == []
     row = env["db"].get("projects-70")         # adopted into the registry with its binding
     assert row["session_id"] == "live-sid-123" and row["cwd"] == "/w/proj"
+
+
+# --- whois: registry name -> live Claude-land SendMessage address -------------
+
+def test_whois_live_resolves_claude_land_address(env, monkeypatch, capsys):
+    # registry name 'oliver' but Claude advertises a different, cwd-derived name.
+    env["db"].register("oliver", session_id="sid-oliver")
+    env["home"].ensure_home("oliver", cwd="/tmp/x")
+    monkeypatch.setattr(env["native"], "resolve", lambda sid: {
+        "sessionId": "sid-oliver", "name": "ada-8d", "formerNames": ["ada-3f"],
+        "messagingSocketPath": "/tmp/cc-socks/999.sock", "pid": 999, "status": "idle"})
+    a = env["cli"].build_parser().parse_args(["whois", "oliver"])
+    assert a.func(a) == 0
+    out = capsys.readouterr().out
+    assert "uds:/tmp/cc-socks/999.sock" in out   # the fool-proof SendMessage target
+    assert "ada-8d" in out                        # claude name != registry name
+
+
+def test_whois_json_is_machine_readable(env, monkeypatch, capsys):
+    import json
+    env["db"].register("locke", session_id="sid-locke")
+    env["home"].ensure_home("locke", cwd="/tmp/x")
+    monkeypatch.setattr(env["native"], "resolve", lambda sid: {
+        "sessionId": "sid-locke", "name": "locke-28",
+        "messagingSocketPath": "/tmp/cc-socks/77.sock", "pid": 77, "status": "busy"})
+    a = env["cli"].build_parser().parse_args(["whois", "locke", "--json"])
+    assert a.func(a) == 0
+    d = json.loads(capsys.readouterr().out)
+    assert d["sendmessage_to"] == "uds:/tmp/cc-socks/77.sock"
+    assert d["claude_name"] == "locke-28" and d["live"] is True
+
+
+def test_whois_down_registered_agent_has_no_target(env, capsys):
+    # registered but never bound (no session) -> clear 'not live', exit 1, not an error
+    env["db"].register("saul")
+    env["home"].ensure_home("saul", cwd="/tmp/x")
+    a = env["cli"].build_parser().parse_args(["whois", "saul"])
+    assert a.func(a) == 1
+    assert "not live" in capsys.readouterr().out
+
+
+def test_whois_unknown_name_errors(env):
+    a = env["cli"].build_parser().parse_args(["whois", "ghost"])
+    assert a.func(a) != 0
+
+
+# --- structured metadata (pr/issue/project) --------------------------------
+
+def test_meta_set_at_register_and_read_back(env):
+    db = env["db"]
+    db.register("alpha", agent_type="ada",
+                meta={"project": "ol", "issue": "14200", "pr": "14212"})
+    assert db.meta_of(db.get("alpha")) == {
+        "project": "ol", "issue": "14200", "pr": "14212"}
+    # an agent with no metadata reads back as an empty dict, never None
+    db.register("plain", agent_type="ada")
+    assert db.meta_of(db.get("plain")) == {}
+
+
+def test_meta_query_existence_and_equality(env):
+    db = env["db"]
+    db.register("alpha", meta={"project": "ol", "issue": "14200", "pr": "14212"})
+    db.register("beta", meta={"project": "ol", "issue": "14300"})
+    db.register("gamma", meta={"project": "bgp"})
+    db.register("delta")
+    has = lambda *f: sorted(a["name"] for a in db.select(meta=f))
+    # Mek's three existence queries: "agents that have a metadata.<key>"
+    assert has(("pr", None)) == ["alpha"]
+    assert has(("issue", None)) == ["alpha", "beta"]
+    assert has(("project", None)) == ["alpha", "beta", "gamma"]
+    # equality, incl. the forge resolver "the agent for PR N"
+    assert has(("project", "ol")) == ["alpha", "beta"]
+    assert has(("pr", "14212")) == ["alpha"]
+
+
+def test_meta_equality_coerces_both_sides_to_string(env):
+    # stored as an int (via a {json} blob), queried as a string -> still matches
+    db = env["db"]
+    db.register("eps", meta={"pr": 99})
+    assert [a["name"] for a in db.select(meta=[("pr", "99")])] == ["eps"]
+
+
+def test_meta_set_merges_and_rm_drops(env, capsys):
+    db = env["db"]
+    db.register("beta", meta={"project": "ol", "issue": "14300"})
+    P = env["cli"].build_parser()
+    a = P.parse_args(["meta", "set", "beta", "pr=14305"]); assert a.func(a) == 0
+    assert db.meta_of(db.get("beta")) == {
+        "project": "ol", "issue": "14300", "pr": "14305"}   # merge, not replace
+    a = P.parse_args(["meta", "rm", "beta", "issue"]); assert a.func(a) == 0
+    assert db.meta_of(db.get("beta")) == {"project": "ol", "pr": "14305"}
+
+
+def test_meta_survives_reregister_without_meta(env):
+    # re-registering (e.g. on `up`) without --meta must not wipe metadata (coalesce)
+    db = env["db"]
+    db.register("alpha", meta={"pr": "14212"})
+    db.register("alpha", agent_type="ada")  # no meta passed
+    assert db.meta_of(db.get("alpha")) == {"pr": "14212"}
+
+
+def test_ls_json_emits_meta_and_filters(env, capsys):
+    import json
+    db = env["db"]
+    db.register("alpha", agent_type="ada", meta={"project": "ol", "pr": "14212"})
+    db.register("beta", agent_type="ada", meta={"project": "ol"})
+    a = env["cli"].build_parser().parse_args(["ls", "--json", "--meta", "pr"])
+    assert a.func(a) == 0
+    rows = [json.loads(l) for l in capsys.readouterr().out.splitlines() if l.strip()]
+    assert [r["name"] for r in rows] == ["alpha"]
+    assert rows[0]["meta"] == {"project": "ol", "pr": "14212"}
+
+
+def test_whois_json_includes_meta(env, monkeypatch, capsys):
+    import json
+    env["db"].register("alpha", session_id="sid-a", meta={"pr": "14212"})
+    env["home"].ensure_home("alpha", cwd="/tmp/x")
+    monkeypatch.setattr(env["native"], "resolve", lambda sid: {
+        "sessionId": "sid-a", "name": "ada-9",
+        "messagingSocketPath": "/tmp/cc-socks/9.sock", "pid": 9, "status": "idle"})
+    a = env["cli"].build_parser().parse_args(["whois", "alpha", "--json"])
+    assert a.func(a) == 0
+    assert json.loads(capsys.readouterr().out)["meta"] == {"pr": "14212"}
+
+
+def test_meta_register_rejects_bare_key(env):
+    # register --meta must be key=value; a bare key is a usage error, not silent
+    a = env["cli"].build_parser().parse_args(["register", "x", "--meta", "pr"])
+    assert a.func(a) == 1
+
+
+# --- recap / checkin -------------------------------------------------------
+
+def test_checkin_sets_recap_timestamp_and_journal(env):
+    db, cli = env["db"], env["cli"]
+    db.register("dewey", agent_type="lead")
+    a = cli.build_parser().parse_args(
+        ["checkin", "--agent", "dewey", "ada", "staffed;", "commit", "drafted"])
+    assert a.func(a) == 0
+    row = db.get("dewey")
+    assert row["recap"] == "ada staffed; commit drafted"
+    assert row["recap_at"]                              # timestamped
+    assert env["home"].recap_log("dewey")[-1][1] == "ada staffed; commit drafted"
+
+
+def test_checkin_defaults_to_calling_agent(env, monkeypatch):
+    db, cli = env["db"], env["cli"]
+    db.register("saul", agent_type="lead", session_id="sid-saul")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-saul")
+    a = cli.build_parser().parse_args(["checkin", "solr", "reindex", "running"])
+    assert a.func(a) == 0
+    assert db.get("saul")["recap"] == "solr reindex running"
+
+
+def test_checkin_without_agent_or_caller_errors(env, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    a = env["cli"].build_parser().parse_args(["checkin", "hello"])
+    assert a.func(a) == 1
+
+
+def test_fmt_meta_is_keyvals_with_lead_order_and_list_join(env):
+    f = env["cli"]._fmt_meta
+    assert f({}) == ""
+    # common keys lead (project, issue, pr, epics), then the rest; lists join on ','
+    assert f({"pr": "123", "project": "ol", "epics": [14200, 14300]}) == \
+        "project: ol  pr: 123  epics: 14200,14300"
+
+
+def test_ls_meta_column_is_keyvals_not_json(env, capsys):
+    db, cli = env["db"], env["cli"]
+    db.register("w", agent_type="lead", meta={"project": "ol", "pr": "123"})
+    a = cli.build_parser().parse_args(["ls", "--flat"])
+    assert a.func(a) == 0
+    out = capsys.readouterr().out
+    assert "project: ol" in out and "pr: 123" in out     # compact key: value pairs
+    assert "{" not in out and '"project"' not in out     # not JSON
+
+
+def test_ls_desc_prefers_recap_over_role(env, capsys):
+    db, cli = env["db"], env["cli"]
+    db.register("dewey", agent_type="lead", role="Tags Lead")
+    db.set_recap("dewey", "mapping registry.json")
+    a = cli.build_parser().parse_args(["ls", "--flat"])
+    assert a.func(a) == 0
+    out = capsys.readouterr().out
+    assert "mapping registry.json" in out      # the fresh recap, not the role
+
+
+# --- more (full record) ----------------------------------------------------
+
+def test_more_shows_full_record(env, capsys):
+    db, cli = env["db"], env["cli"]
+    db.register("dewey", agent_type="lead", role="Tags Lead",
+                meta={"project": "ol"}, cwd="/tmp/x")
+    db.set_recap("dewey", "ada up")
+    a = cli.build_parser().parse_args(["more", "dewey"])
+    assert a.func(a) == 0
+    out = capsys.readouterr().out
+    assert "Tags Lead" in out and "ada up" in out and "project" in out
+
+
+def test_more_json_is_machine_readable(env, capsys):
+    import json
+    db, cli = env["db"], env["cli"]
+    db.register("dewey", agent_type="lead", role="Tags Lead", meta={"pr": "1"})
+    db.set_recap("dewey", "done")
+    a = cli.build_parser().parse_args(["more", "dewey", "--json"])
+    assert a.func(a) == 0
+    d = json.loads(capsys.readouterr().out)
+    assert d["desc"] == "Tags Lead" and d["recap"] == "done" and d["meta"] == {"pr": "1"}
+
+
+def test_register_desc_is_alias_for_role(env):
+    a = env["cli"].build_parser().parse_args(
+        ["register", "x", "--desc", "does a thing"])
+    assert a.func(a) == 0
+    assert env["db"].get("x")["role"] == "does a thing"
+
+
+# --- snapshot / reindex ----------------------------------------------------
+
+def test_snapshot_reindex_rebuilds_registry(env):
+    db = env["db"]
+    db.register("alpha", agent_type="ada", role="A", meta={"pr": "1"})
+    db.register("beta", agent_type="lead", team=None)
+    db.set_recap("alpha", "halfway")
+    db.ignore_session("ghost-sid", reason="noise")
+    db.snapshot()
+    # simulate loss: delete the rows, then rebuild purely from the JSON snapshot
+    db.remove("alpha")
+    db.remove("beta")
+    assert db.get("alpha") is None
+    n_agents, n_ignored = db.reindex_from_snapshot()
+    assert n_agents == 2 and n_ignored == 1
+    a = db.get("alpha")
+    assert a["role"] == "A" and db.meta_of(a) == {"pr": "1"} and a["recap"] == "halfway"
+    assert "ghost-sid" in db.ignored_sessions()
+
+
+def test_maybe_snapshot_is_lazy(env):
+    db = env["db"]
+    db.register("alpha")
+    assert db.maybe_snapshot() is True       # missing -> writes
+    assert db.maybe_snapshot() is False      # fresh -> skips
+    assert db.maybe_snapshot(max_age=0) is True   # forced stale -> rewrites
+
+
+def test_snapshot_is_atomic_json(env, capsys):
+    import json
+    db, cli = env["db"], env["cli"]
+    db.register("alpha", meta={"project": "ol"})
+    a = cli.build_parser().parse_args(["snapshot"])
+    assert a.func(a) == 0
+    with open(db.SNAPSHOT_PATH) as f:
+        data = json.load(f)
+    assert data["agents"][0]["name"] == "alpha" and "written_at" in data
+
+
+# --- session (transcript tail/head) ----------------------------------------
+
+def _write_transcript(env, name, sid, cwd, lines):
+    from agents import history
+    path = history.transcript_path(cwd, sid)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    import json
+    with open(path, "w") as f:
+        for r in lines:
+            f.write(json.dumps(r) + "\n")
+    return path
+
+
+def test_session_renders_transcript(env, capsys, tmp_path):
+    db, cli = env["db"], env["cli"]
+    cwd = str(tmp_path / "proj")
+    db.register("t1", agent_type="ada", session_id="sid-t1", cwd=cwd)
+    _write_transcript(env, "t1", "sid-t1", cwd, [
+        {"type": "user", "message": {"role": "user", "content": "add warnings"}},
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "on it"}, {"type": "tool_use", "name": "Edit"}]}},
+        {"type": "mode"},
+    ])
+    a = cli.build_parser().parse_args(["session", "t1"])
+    assert a.func(a) == 0
+    out = capsys.readouterr().out
+    assert "you: add warnings" in out and "asst: on it" in out and "⚙ Edit" in out
+    assert "mode" not in out                  # non-message events are skipped
+
+
+def test_session_head_and_raw(env, capsys, tmp_path):
+    db, cli = env["db"], env["cli"]
+    cwd = str(tmp_path / "proj")
+    db.register("t1", agent_type="ada", session_id="sid-t1", cwd=cwd)
+    _write_transcript(env, "t1", "sid-t1", cwd, [
+        {"type": "user", "message": {"role": "user", "content": "first"}},
+        {"type": "user", "message": {"role": "user", "content": "second"}},
+    ])
+    a = cli.build_parser().parse_args(["session", "t1", "--head", "-n", "1"])
+    assert a.func(a) == 0
+    assert "first" in capsys.readouterr().out
+    a = cli.build_parser().parse_args(["session", "t1", "--raw", "-n", "1"])
+    assert a.func(a) == 0
+    assert '"second"' in capsys.readouterr().out   # exact JSONL, last line
+
+
+def test_session_no_transcript_errors(env):
+    env["db"].register("t2", agent_type="ada")   # never ran, no session
+    a = env["cli"].build_parser().parse_args(["session", "t2"])
+    assert a.func(a) == 1
+
+
+# --- man (manuals) ---------------------------------------------------------
+
+def test_man_renders_live_flags_and_authored_examples(env, capsys):
+    a = env["cli"].build_parser().parse_args(["man", "register"])
+    assert a.func(a) == 0
+    out = capsys.readouterr().out
+    assert "--meta" in out and "--session-id" in out        # flags, live from parser
+    assert "BEST PRACTICES" in out and "EXAMPLES" in out
+    assert "agents register saul" in out                    # an authored example
+    assert "gh issue create" in out                         # the open-an-issue nudge
+
+
+def test_man_overview_recommends_man_and_lists_concepts(env, capsys):
+    a = env["cli"].build_parser().parse_args(["man"])
+    assert a.func(a) == 0
+    out = capsys.readouterr().out
+    assert "agents man <command>" in out
+    assert "herdr" in out and "conventions" in out
+
+
+def test_man_concept_topic(env, capsys):
+    a = env["cli"].build_parser().parse_args(["man", "herdr"])
+    assert a.func(a) == 0
+    out = capsys.readouterr().out
+    assert "workspace" in out and "tab" in out              # the lead-vs-ada rule
+
+
+def test_man_unknown_topic_errors(env):
+    a = env["cli"].build_parser().parse_args(["man", "nope"])
+    assert a.func(a) != 0
+
+
+def test_manuals_stay_in_sync_with_commands(env):
+    # Anti-drift: every CORE manual names a real command, and no manual is stale.
+    from agents import manuals
+    sub = env["cli"]._subparser_map(env["cli"].build_parser())
+    for name in manuals.CORE:
+        assert name in sub, f"manual for '{name}' but no such command"
+    for name in manuals.MANUALS:
+        assert name in sub, f"stale manual: '{name}' is not a command"
+
+
+def test_help_leads_with_man_recommendation(env):
+    text = env["cli"].build_parser().format_help()
+    assert "agents man <command>" in text                   # before the command list
+
+
+# --- meta.epics (list value) -----------------------------------------------
+
+def test_meta_epics_list_set_and_membership_query(env):
+    db, cli = env["db"], env["cli"]
+    db.register("dewey", agent_type="lead")
+    db.register("saul", agent_type="lead")
+    # a list value is set via the {json} blob form
+    a = cli.build_parser().parse_args(
+        ["meta", "set", "dewey", '{"epics":[14200,14300]}'])
+    assert a.func(a) == 0
+    assert db.meta_of(db.get("dewey"))["epics"] == [14200, 14300]
+    # existence: leads that have epics; membership: the lead owning epic 14200
+    assert sorted(r["name"] for r in db.select(meta=[("epics", None)])) == ["dewey"]
+    assert [r["name"] for r in db.select(meta=[("epics", "14200")])] == ["dewey"]
+    assert db.select(meta=[("epics", "99999")]) == []   # not owned by anyone
+
+
+# --- library facade (import agents; agents.*) ------------------------------
+
+def test_api_register_ls_meta_checkin(env):
+    import agents
+    row = agents.register("tess", type="ada", team="saul", groups="project:ol",
+                          desc="Solr helper", meta={"pr": "14212"})
+    assert row["role"] == "Solr helper" and row["meta"] == {"pr": "14212"}
+    # ls returns plain dicts with status + parsed groups/meta
+    rows = agents.ls(group="project:ol", meta=[("pr", "14212")])
+    assert [r["name"] for r in rows] == ["tess"]
+    assert rows[0]["status"] == "down" and rows[0]["groups"] == ["project:ol"]
+    # checkin + meta_set are data operations, no printing
+    ts = agents.checkin("tess", "builder patched")
+    assert agents.get("tess")["recap"] == "builder patched" and ts
+    assert agents.meta_set("tess", {"issue": "99"})["issue"] == "99"
+    assert env["db"].get("tess")["meta"]            # written through to the same db
+
+
+def test_api_whoami_and_whois_are_data(env, monkeypatch):
+    import agents
+    agents.register("saul", type="lead", session_id="sid-saul")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-saul")
+    assert agents.whoami()["name"] == "saul"
+    # not live -> whois is None (no resolver record), never raises
+    assert agents.whois("saul") is None
+
+
+def test_api_send_delivers(env):
+    import agents
+    sock = os.path.join(env["socks"], f"{os.getpid()}.sock")
+    srv = FakeSession(sock)
+    try:
+        write_session(env["sessions"], os.getpid(), sock, "sid-api", "me",
+                      peer_token="cafe" * 8)
+        agents.register("lenny", cwd="/tmp/x", session_id="sid-api")
+        agents.send("lenny", "hi via api")
+        assert wait_for(lambda: any("hi via api" in l.get("message", {}).get("content", "")
+                                    for l in srv.lines))
+    finally:
+        srv.close()
+
+
+def test_api_send_unbound_raises(env):
+    import agents
+    agents.register("ghosty", type="ada")   # no session
+    import pytest
+    with pytest.raises(LookupError):
+        agents.send("ghosty", "anyone there?")
+
+
+# --- versioned schema migrations -------------------------------------------
+
+def test_schema_baseline_version(env):
+    db = env["db"]
+    db.init()
+    assert db.schema_version() == db.BASELINE_VERSION == 1
+
+
+def test_migration_runs_once_then_is_idempotent(env, monkeypatch):
+    db = env["db"]
+    db.init()                                  # baseline -> v1
+    calls = {"n": 0}
+
+    def migrate_v2(c):
+        calls["n"] += 1
+        c.execute("ALTER TABLE agents ADD COLUMN extra TEXT")
+
+    monkeypatch.setattr(db, "MIGRATIONS", {2: migrate_v2})
+    old, new = db.migrate_now()
+    assert (old, new) == (1, 2) and calls["n"] == 1
+    # a second pass must not re-run it (version already at 2)
+    old2, new2 = db.migrate_now()
+    assert (old2, new2) == (2, 2) and calls["n"] == 1
+
+
+def test_schema_command_reports(env, capsys):
+    P = env["cli"].build_parser()
+    a = P.parse_args(["schema"])
+    assert a.func(a) == 0
+    assert "migrated v0 → v1" in capsys.readouterr().out    # fresh db adopts baseline
+    a = P.parse_args(["schema"])
+    assert a.func(a) == 0
+    assert "schema at v1 (up to date)" in capsys.readouterr().out
+
+
+def test_upgrade_snapshots_before_touching_anything(env, monkeypatch):
+    db, cli = env["db"], env["cli"]
+    db.register("alpha", meta={"pr": "1"})
+    # make the clone fail immediately: the upgrade aborts, but the snapshot must
+    # already have been written first.
+    import subprocess
+    monkeypatch.setattr(subprocess, "run",
+                        lambda *a, **k: type("R", (), {"returncode": 1, "stderr": "no net", "stdout": ""})())
+    a = cli.build_parser().parse_args(["upgrade"])
+    assert a.func(a) == 1                       # clone failed
+    assert os.path.exists(db.SNAPSHOT_PATH)     # but we backed up first
+    import json
+    assert json.load(open(db.SNAPSHOT_PATH))["agents"][0]["name"] == "alpha"
