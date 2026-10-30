@@ -24,13 +24,15 @@ def env(tmp_path, monkeypatch):
 
 def test_defaults_when_no_file(env):
     cfg = config.load()
-    assert cfg == {"permission_mode": "acceptEdits", "host": "tmux"}
+    assert cfg == {"permission_mode": "acceptEdits", "host": "tmux",
+                   "up_mode": "foreground"}
 
 
 def test_save_roundtrip_and_drops_unknown_keys(env):
     saved = config.save({"permission_mode": "bypassPermissions", "host": "herdr",
-                         "junk": "ignored"})
-    assert saved == {"permission_mode": "bypassPermissions", "host": "herdr"}
+                         "up_mode": "detach", "junk": "ignored"})
+    assert saved == {"permission_mode": "bypassPermissions", "host": "herdr",
+                     "up_mode": "detach"}
     assert config.load() == saved
     on_disk = json.load(open(config.config_path()))
     assert "junk" not in on_disk
@@ -83,7 +85,7 @@ def test_configure_noninteractive_writes_file(env):
                               "--host", "foreground", "--no-input"])
     assert args.func(args) == 0
     assert config.load() == {"permission_mode": "bypassPermissions",
-                             "host": "foreground"}
+                             "host": "foreground", "up_mode": "foreground"}
 
 
 def test_configure_flag_shorthand_parses(env):

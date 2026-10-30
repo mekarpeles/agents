@@ -16,6 +16,7 @@ everything after that is host-independent.
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -167,13 +168,43 @@ class Herdr(Host):
         if not shutil.which("herdr") or os.environ.get("HERDR_ENV") != "1":
             raise Unsupported("herdr requested but not running inside herdr")
 
-    def _workspace(self, group):
-        return group or os.environ.get("HERDR_WORKSPACE_ID")
+    @staticmethod
+    def _norm(s):
+        return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+    def _find_workspace(self, key):
+        """The id of an existing workspace whose label matches KEY (a lead's name),
+        or None. An empty KEY means the ambient workspace (`HERDR_WORKSPACE_ID`)."""
+        if not key:
+            return os.environ.get("HERDR_WORKSPACE_ID")
+        want = self._norm(key)
+        r = subprocess.run(["herdr", "workspace", "list"],
+                           capture_output=True, text=True)
+        for w in (_json_get(r.stdout, ("result", "workspaces")) or []):
+            if self._norm(w.get("label")) == want:
+                return w.get("workspace_id")
+        return None
+
+    def _ensure_workspace(self, key):
+        """Like `_find_workspace`, but create the workspace (labelled KEY) when none
+        matches — so a lead gets its own space the first time it launches."""
+        wid = self._find_workspace(key)
+        if wid or not key:
+            return wid
+        c = subprocess.run(
+            ["herdr", "workspace", "create", "--label", key, "--no-focus"],
+            capture_output=True, text=True)
+        wid = (_json_get(c.stdout, ("result", "workspace_id"))
+               or _json_get(c.stdout, ("result", "workspace", "workspace_id")))
+        if not wid:
+            raise RuntimeError(
+                f"herdr workspace create failed for '{key}': {c.stdout}{c.stderr}")
+        return wid
 
     def start(self, agent, cmd, cwd, env, group=None):
         self._require()
         r = subprocess.run(
-            ["herdr", "tab", "create", "--workspace", self._workspace(group),
+            ["herdr", "tab", "create", "--workspace", self._ensure_workspace(group),
              "--cwd", cwd, "--label", agent, "--no-focus"],
             capture_output=True, text=True)
         pane = _json_get(r.stdout, ("result", "root_pane", "pane_id"))
@@ -187,6 +218,14 @@ class Herdr(Host):
                            capture_output=True, text=True)
         return Launched(_json_get(g.stdout, ("result", "pane", "pid")), None)
 
+    def has_window(self, agent, group=None):
+        # A tab labelled `agent` already exists in the workspace, so attach can
+        # focus it instead of promoting (restarting) the session into herdr.
+        try:
+            return self._tab_id(agent, group) is not None
+        except (OSError, RuntimeError):
+            return False
+
     def attach(self, agent, group=None):
         self._require()
         tab = self._tab_id(agent, group)
@@ -195,8 +234,11 @@ class Herdr(Host):
         subprocess.run(["herdr", "tab", "focus", tab], capture_output=True)
 
     def _tab_id(self, label, group):
+        wid = self._find_workspace(group)
+        if not wid:
+            return None
         r = subprocess.run(
-            ["herdr", "tab", "list", "--workspace", self._workspace(group)],
+            ["herdr", "tab", "list", "--workspace", wid],
             capture_output=True, text=True)
         try:
             tabs = json.loads(r.stdout).get("result", {}).get("tabs", [])

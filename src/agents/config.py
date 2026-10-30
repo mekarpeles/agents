@@ -21,7 +21,14 @@ PERMISSION_MODES = ("acceptEdits", "auto", "manual", "bypassPermissions")
 DEFAULTS = {
     "permission_mode": "acceptEdits",
     "host": "tmux",
+    "up_mode": "foreground",
 }
+
+# How a bare `up` launches, when no -F/-d/-a/--host is given:
+#   foreground — inline in the current terminal (works without tmux; the default)
+#   detach     — detached in `host` (tmux/herdr), not attached
+#   attach     — started in `host` and attached to immediately
+UP_MODES = ("foreground", "detach", "attach")
 
 
 def config_path():

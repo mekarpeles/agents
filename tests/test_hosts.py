@@ -44,6 +44,7 @@ def test_herdr_requires_herdr(monkeypatch):
 @pytest.mark.skipif(not shutil.which("tmux"), reason="tmux not installed")
 def test_tmux_start_creates_window(tmp_path, monkeypatch):
     monkeypatch.setenv("TMUX_TMPDIR", str(tmp_path))  # isolated tmux server
+    monkeypatch.delenv("TMUX", raising=False)        # don't touch the ambient server
     t = hosts.Tmux()
     try:
         launched = t.start("t1", ["sleep", "30"], str(tmp_path), {}, group="grp")
@@ -69,6 +70,7 @@ def test_tmux_has_window_checks_window_and_locate_pid(tmp_path, monkeypatch):
     # where attach found session 'ada' and leaked "can't find window"). locate_pid
     # finds an agent's real window by pid regardless of session naming.
     monkeypatch.setenv("TMUX_TMPDIR", str(tmp_path))
+    monkeypatch.delenv("TMUX", raising=False)
     t = hosts.Tmux()
     try:
         launched = t.start("a1", ["sleep", "30"], str(tmp_path), {})        # agents-a1
@@ -87,5 +89,6 @@ def test_tmux_attach_missing_session_is_clear(tmp_path, monkeypatch):
     # No tmux window for this agent -> a clear error, never execvp into tmux's
     # raw "can't find session" leak.
     monkeypatch.setenv("TMUX_TMPDIR", str(tmp_path))
+    monkeypatch.delenv("TMUX", raising=False)
     with pytest.raises(RuntimeError, match="isn't running under tmux"):
         hosts.Tmux().attach("ghost")
