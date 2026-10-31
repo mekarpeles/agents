@@ -35,12 +35,19 @@ base; Claude Code loaded this file automatically.
   `agents ls --meta pr=<N>`. (This is distinct from your description, which is the
   one-time overview of your role.)
 - **Test it for real** — not the same as a green suite. Run the actual environment
-  against development data (never production, and never by performing the harm you
-  are testing for). Sort every claim into RAN vs READ, with counts.
+  (Docker where the repo uses it) against development data (never production, and
+  never by performing the harm you are testing for). Sort every claim into RAN vs
+  READ, with counts, **and post the evidence on the PR**.
 - **Adversarial review before `gh pr ready`:** spawn a subagent that inherits none
   of your context to review the diff. Every finding is fixed with a red-first test
   or rebutted with evidence. Post "N findings, N fixed, N rebutted."
-- **You never merge.** Approval belongs to the human who owns the repo.
+- **Leaving draft is yours, not a human's.** Move the PR out of draft
+  (`gh pr ready`) yourself exactly when both gates are met, each with evidence posted
+  on the PR: (1) tested for real, and (2) adversarial review passed **at the current
+  HEAD** — if you've pushed commits since the PASS, re-run it; a stale PASS isn't a
+  PASS. No human sign-off is required to leave draft — don't wait for one.
+- **You never merge.** Human approval is scoped to merge; it belongs to the human
+  who owns the repo.
 
 ## The ledger is the single record
 
